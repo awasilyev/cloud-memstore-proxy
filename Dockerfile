@@ -34,6 +34,9 @@ COPY --from=builder /build/cloud-memstore-proxy /cloud-memstore-proxy
 # Expose default ports (6379-6389 to support up to 10 endpoints)
 EXPOSE 6379 6380 6381 6382 6383 6384 6385 6386 6387 6388 6389
 
+# Expose health check port
+EXPOSE 8080
+
 # Run the proxy
 ENTRYPOINT ["/cloud-memstore-proxy"]
 
