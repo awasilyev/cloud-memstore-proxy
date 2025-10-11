@@ -46,6 +46,7 @@ func (s *Server) Start() error {
 	// Liveness endpoint - always returns 200 if server is running
 	mux.HandleFunc("/livez", s.handleLiveness)
 	mux.HandleFunc("/healthz", s.handleLiveness) // Alias for compatibility
+	mux.HandleFunc("/", s.handleLiveness)        // Root path for Cloud Run startup probes
 
 	// Ready endpoint - returns 200 only when proxies are configured
 	mux.HandleFunc("/readyz", s.handleReady)

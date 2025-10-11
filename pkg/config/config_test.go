@@ -18,8 +18,8 @@ func TestNewConfig(t *testing.T) {
 		t.Errorf("Expected StartPort to be 6379, got %d", cfg.StartPort)
 	}
 
-	if cfg.EnableIAMAuth != true {
-		t.Error("Expected EnableIAMAuth to be true")
+	if cfg.HealthPort != 8080 {
+		t.Errorf("Expected HealthPort to be 8080, got %d", cfg.HealthPort)
 	}
 
 	if cfg.Verbose != false {
@@ -32,7 +32,7 @@ func TestConfigModification(t *testing.T) {
 
 	cfg.LocalAddr = "0.0.0.0"
 	cfg.StartPort = 7000
-	cfg.EnableIAMAuth = false
+	cfg.HealthPort = 9090
 	cfg.Verbose = true
 
 	if cfg.LocalAddr != "0.0.0.0" {
@@ -43,8 +43,8 @@ func TestConfigModification(t *testing.T) {
 		t.Error("StartPort not modified correctly")
 	}
 
-	if cfg.EnableIAMAuth != false {
-		t.Error("EnableIAMAuth not modified correctly")
+	if cfg.HealthPort != 9090 {
+		t.Error("HealthPort not modified correctly")
 	}
 
 	if cfg.Verbose != true {

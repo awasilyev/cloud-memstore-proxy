@@ -15,7 +15,6 @@ type Config struct {
 	LocalAddr     string
 	StartPort     int
 	HealthPort    int
-	EnableIAMAuth bool
 	Verbose       bool
 	TLSSkipVerify bool
 }
@@ -27,7 +26,6 @@ func NewConfig() *Config {
 		LocalAddr:     "127.0.0.1",
 		StartPort:     6379,
 		HealthPort:    8080,
-		EnableIAMAuth: true,
 		Verbose:       false,
 		TLSSkipVerify: true, // Default to true for GCP Memorystore self-signed certs
 	}

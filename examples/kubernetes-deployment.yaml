@@ -10,9 +10,12 @@ data:
   INSTANCE_NAME: "my-valkey"
   # Or use full format:
   # INSTANCE_NAME: "projects/my-project/locations/us-central1/instances/my-valkey"
-  ENABLE_IAM_AUTH: "true"
-  TLS_SKIP_VERIFY: "true"
+  
+  # Configuration
   LOCAL_ADDR: "0.0.0.0"
+  START_PORT: "6379"
+  HEALTH_PORT: "8080"
+  TLS_SKIP_VERIFY: "true"
   VERBOSE: "false"
 ---
 apiVersion: apps/v1
@@ -47,6 +50,9 @@ spec:
         - containerPort: 6380
           name: redis-ro
           protocol: TCP
+        - containerPort: 8080
+          name: health
+          protocol: TCP
         resources:
           requests:
             memory: "64Mi"
@@ -55,15 +61,19 @@ spec:
             memory: "256Mi"
             cpu: "500m"
         livenessProbe:
-          tcpSocket:
-            port: 6379
+          httpGet:
+            path: /livez
+            port: 8080
           initialDelaySeconds: 10
           periodSeconds: 10
+          timeoutSeconds: 3
         readinessProbe:
-          tcpSocket:
-            port: 6379
+          httpGet:
+            path: /readyz
+            port: 8080
           initialDelaySeconds: 5
           periodSeconds: 5
+          timeoutSeconds: 3
 ---
 apiVersion: v1
 kind: Service

@@ -67,7 +67,7 @@ docker run -d -p 6379:6379 \
 | `-instance` | Instance name - short (`my-instance`) or full (`projects/.../instances/...`) format (required) | - |
 | `-local-addr` | Local address to bind to | `127.0.0.1` |
 | `-start-port` | Starting port for first endpoint | `6379` |
-| `-enable-iam-auth` | Enable IAM authentication (Valkey only) | `true` |
+| `-health-port` | Health check HTTP server port | `8080` |
 | `-tls-skip-verify` | Skip TLS certificate verification | `true` |
 | `-verbose` | Enable verbose logging | `false` |
 
@@ -78,7 +78,8 @@ docker run -d -p 6379:6379 \
 | `INSTANCE_NAME` | Instance name (short or full format) | `-instance` |
 | `INSTANCE_TYPE` | Instance type (`valkey` or `redis`) | `-type` |
 | `LOCAL_ADDR` | Local address to bind to | `-local-addr` |
-| `ENABLE_IAM_AUTH` | Enable IAM authentication (Valkey only) | `-enable-iam-auth` |
+| `START_PORT` | Starting port for first endpoint | `-start-port` |
+| `HEALTH_PORT` | Health check HTTP server port | `-health-port` |
 | `TLS_SKIP_VERIFY` | Skip TLS certificate verification | `-tls-skip-verify` |
 | `VERBOSE` | Enable verbose logging | `-verbose` |
 
@@ -267,34 +268,68 @@ export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
 
 ### Kubernetes
 
+See `examples/kubernetes-deployment.yaml` for complete manifests.
+
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
-metadata:
-  name: valkey-auth-proxy
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: valkey-auth-proxy
   template:
-    metadata:
-      labels:
-        app: valkey-auth-proxy
     spec:
       containers:
       - name: proxy
-        image: valkey-auth-proxy:latest
+        image: ghcr.io/awasilyev/cloud-memstore-proxy:latest
         env:
-        - name: VALKEY_INSTANCE_NAME
-          value: "projects/my-project/locations/us-central1/instances/my-valkey"
-        - name: ENABLE_IAM_AUTH
-          value: "true"
+        - name: INSTANCE_TYPE
+          value: "valkey"
+        - name: INSTANCE_NAME
+          value: "my-valkey"
         ports:
         - containerPort: 6379
-          name: redis
-        - containerPort: 6380
-          name: redis-replica
+        - containerPort: 8080
+          name: health
+        livenessProbe:
+          httpGet:
+            path: /livez
+            port: 8080
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+```
+
+### Cloud Run Sidecar
+
+See `examples/cloudrun-sidecar.yaml` for complete configuration.
+
+```yaml
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: my-app
+        env:
+        - name: REDIS_HOST
+          value: "127.0.0.1"
+      
+      - name: memstore-proxy
+        image: ghcr.io/awasilyev/cloud-memstore-proxy:latest
+        env:
+        - name: INSTANCE_TYPE
+          value: "valkey"
+        - name: INSTANCE_NAME
+          value: "my-valkey"
+        - name: LOCAL_ADDR
+          value: "127.0.0.1"
+        - name: HEALTH_PORT
+          value: "8081"  # Use different port from main app
+        ports:
+        - containerPort: 8081
+        startupProbe:
+          httpGet:
+            path: /livez
+            port: 8081
 ```
 
 ### Docker Compose

@@ -95,14 +95,18 @@ func (m *Manager) AddProxy(ctx context.Context, endpoint discovery.Endpoint, loc
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Initialize token source if IAM auth is enabled AND no password is set (shared across all proxies)
+	// Initialize token source if no password is set (for IAM auth)
+	// This will be used only if the instance has IAM_AUTH mode
 	// Password auth takes precedence over IAM auth
-	if m.config.EnableIAMAuth && m.authPassword == "" && m.tokenSource == nil {
+	if m.authPassword == "" && m.tokenSource == nil {
 		tokenSource, err := auth.NewIAMTokenProvider(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to create IAM token provider: %w", err)
+			logger.Debug(fmt.Sprintf("IAM token provider creation failed (will skip IAM auth): %v", err))
+			// Don't fail - instance might not need IAM auth
+		} else {
+			m.tokenSource = tokenSource
+			logger.Debug("IAM token provider initialized")
 		}
-		m.tokenSource = tokenSource
 	}
 
 	localAddr := fmt.Sprintf("%s:%d", m.config.LocalAddr, localPort)
@@ -139,11 +143,14 @@ func (m *Manager) Shutdown() {
 
 // Start starts the proxy server
 func (p *Proxy) Start() error {
+	logger.Debug(fmt.Sprintf("Attempting to listen on %s", p.localAddr))
 	listener, err := net.Listen("tcp", p.localAddr)
 	if err != nil {
+		logger.Error(fmt.Sprintf("Failed to bind to %s: %v", p.localAddr, err))
 		return fmt.Errorf("failed to listen on %s: %w", p.localAddr, err)
 	}
 	p.listener = listener
+	logger.Debug(fmt.Sprintf("Successfully bound to %s", p.localAddr))
 
 	go p.acceptConnections()
 	return nil
@@ -256,22 +263,27 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 		tcpConn.SetNoDelay(true)
 	}
 
-	// Perform authentication based on configuration
+	// Perform authentication based on what's available
 	// Password auth takes precedence over IAM auth
 	if p.authPassword != "" {
 		// Password authentication (for Redis instances)
+		logger.Debug("Using password authentication")
 		if err := p.authenticatePassword(remoteConn, p.authPassword); err != nil {
 			logger.Error(fmt.Sprintf("Password authentication failed: %v", err))
 			return
 		}
 		logger.Debug("Password authentication successful")
-	} else if p.config.EnableIAMAuth && p.tokenSource != nil {
+	} else if p.tokenSource != nil {
 		// IAM authentication (for Valkey with IAM_AUTH)
+		logger.Debug("Using IAM authentication")
 		if err := p.authenticateIAM(remoteConn); err != nil {
 			logger.Error(fmt.Sprintf("IAM authentication failed: %v", err))
 			return
 		}
 		logger.Debug("IAM authentication successful")
+	} else {
+		// No authentication (AUTH_DISABLED)
+		logger.Debug("No authentication configured (AUTH_DISABLED)")
 	}
 
 	// Start bidirectional copy

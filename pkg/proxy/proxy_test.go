@@ -9,9 +9,9 @@ import (
 
 func TestNewManager(t *testing.T) {
 	cfg := &config.Config{
-		LocalAddr:     "127.0.0.1",
-		StartPort:     6379,
-		EnableIAMAuth: false,
+		LocalAddr:  "127.0.0.1",
+		StartPort:  6379,
+		HealthPort: 8080,
 	}
 
 	manager := NewManager(cfg)

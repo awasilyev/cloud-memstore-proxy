@@ -11,11 +11,8 @@ INSTANCE_NAME=my-instance
 # INSTANCE_NAME=projects/my-project/locations/us-central1/instances/my-instance
 
 # Optional: Local address to bind to (default: 127.0.0.1)
+# Use 0.0.0.0 to listen on all interfaces (for containers)
 LOCAL_ADDR=127.0.0.1
-
-# Optional: Enable IAM authentication for Valkey (default: true)
-# For Redis, password auth is automatic
-ENABLE_IAM_AUTH=true
 
 # Optional: Skip TLS certificate verification (default: true for GCP self-signed certs)
 TLS_SKIP_VERIFY=true
