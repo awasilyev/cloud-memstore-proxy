@@ -1,0 +1,71 @@
+# golangci-lint configuration v2
+# See https://golangci-lint.run/usage/configuration/
+
+version: "2"
+
+linters:
+  enable:
+    # Core linters (always enabled)
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    
+    # Quality linters
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - copyloopvar
+    - dupword
+    - durationcheck
+    - errname
+    - gosmopolitan
+    - grouper
+    - makezero
+    - mirror
+    - misspell
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - nolintlint
+    - predeclared
+    - reassign
+    - sqlclosecheck
+    - testableexamples
+    - testifylint
+    - unconvert
+  
+  disable:
+    # Intentionally disabled for TCP proxy
+    - errcheck          # TCP socket operations intentionally ignore errors
+    - contextcheck      # Goroutines intentionally don't pass context
+    - dupl              # API call code is intentionally similar
+    - err113            # Dynamic errors are fine for this use case
+    - errorlint         # Type assertions on errors are intentional
+    - mnd               # Magic numbers (6379, buffer sizes) are standard
+    - noctx             # TCP operations don't need context
+    - noinlineerr       # Inline error handling is clearer
+    - perfsprint        # fmt.Sprintf is fine for this use case
+    - revive            # Too many style opinions for a proxy
+    
+    # Not applicable to this project
+    - exhaustive
+    - exhaustruct
+    - forcetypeassert
+    - gochecknoglobals
+    - gochecknoinits
+    - goconst
+    - gocyclo
+    - godot
+    - godox
+    - goheader
+    - ireturn
+    - nlreturn
+    - nonamedreturns
+    - testpackage
+    - wrapcheck
+    - wsl
+
+run:
+  timeout: 5m
+

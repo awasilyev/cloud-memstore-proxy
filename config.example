@@ -1,0 +1,29 @@
+# Cloud Memstore Proxy Configuration Example
+# Copy this file to .env and update with your values
+
+# Required: Instance type - 'valkey' or 'redis' (default: valkey)
+INSTANCE_TYPE=valkey
+
+# Required: GCP Memorystore instance name
+# Short format (works on GCP with metadata):
+INSTANCE_NAME=my-instance
+# Or full format:
+# INSTANCE_NAME=projects/my-project/locations/us-central1/instances/my-instance
+
+# Optional: Local address to bind to (default: 127.0.0.1)
+LOCAL_ADDR=127.0.0.1
+
+# Optional: Enable IAM authentication for Valkey (default: true)
+# For Redis, password auth is automatic
+ENABLE_IAM_AUTH=true
+
+# Optional: Skip TLS certificate verification (default: true for GCP self-signed certs)
+TLS_SKIP_VERIFY=true
+
+# Optional: Enable verbose logging (default: false)
+VERBOSE=false
+
+# Optional: GCP service account credentials file path
+# If not set, uses Application Default Credentials
+# GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+

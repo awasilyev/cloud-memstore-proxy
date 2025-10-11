@@ -1,0 +1,30 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Go files
+*.go text diff=golang
+
+# Shell scripts
+*.sh text eol=lf
+
+# YAML files
+*.yaml text
+*.yml text
+
+# Markdown files
+*.md text diff=markdown
+
+# Documentation
+*.txt text
+LICENSE text
+README* text
+
+# Archives
+*.tar.gz binary
+*.zip binary
+
+# Binaries
+*.exe binary
+*.so binary
+*.dylib binary
+
