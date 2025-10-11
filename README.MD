@@ -380,7 +380,7 @@ const client = redis.createClient({
 
 ## Requirements
 
-- Go 1.21 or later (for building)
+- Go 1.25 or later (for building)
 - Docker (for containerization)
 - GCP IAM credentials with appropriate permissions:
   - `memorystore.instances.get`

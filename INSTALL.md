@@ -55,7 +55,7 @@ Download the `.zip` file from the releases page and extract it to a location in 
 ### Build from Source
 
 Requirements:
-- Go 1.21 or later
+- Go 1.25 or later
 - Git
 
 ```bash

@@ -17,7 +17,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.25 or later
 - Docker (for testing containerization)
 - Access to GCP (for integration testing)
 
