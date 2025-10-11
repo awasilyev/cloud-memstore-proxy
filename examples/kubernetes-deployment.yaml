@@ -1,0 +1,96 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: memstore-proxy-config
+  namespace: default
+data:
+  # Instance type: 'valkey' or 'redis'
+  INSTANCE_TYPE: "valkey"
+  # Short format works when running on GKE (uses GCP metadata)
+  INSTANCE_NAME: "my-valkey"
+  # Or use full format:
+  # INSTANCE_NAME: "projects/my-project/locations/us-central1/instances/my-valkey"
+  ENABLE_IAM_AUTH: "true"
+  TLS_SKIP_VERIFY: "true"
+  LOCAL_ADDR: "0.0.0.0"
+  VERBOSE: "false"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memstore-proxy
+  namespace: default
+  labels:
+    app: memstore-proxy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: memstore-proxy
+  template:
+    metadata:
+      labels:
+        app: memstore-proxy
+    spec:
+      serviceAccountName: memstore-proxy-sa
+      containers:
+      - name: proxy
+        image: ghcr.io/awasilyev/cloud-memstore-proxy:latest
+        imagePullPolicy: Always
+        envFrom:
+        - configMapRef:
+            name: memstore-proxy-config
+        ports:
+        - containerPort: 6379
+          name: redis-rw
+          protocol: TCP
+        - containerPort: 6380
+          name: redis-ro
+          protocol: TCP
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+        livenessProbe:
+          tcpSocket:
+            port: 6379
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 6379
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: memstore-proxy
+  namespace: default
+  labels:
+    app: memstore-proxy
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6379
+    targetPort: 6379
+    protocol: TCP
+    name: redis-rw
+  - port: 6380
+    targetPort: 6380
+    protocol: TCP
+    name: redis-ro
+  selector:
+    app: memstore-proxy
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: memstore-proxy-sa
+  namespace: default
+  annotations:
+    iam.gke.io/gcp-service-account: memstore-proxy@my-project.iam.gserviceaccount.com
+

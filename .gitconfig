@@ -1,0 +1,4 @@
+[user]
+  signingkey = /Users/alw/.ssh/id_rsa.pub  
+  name = Alexey Wasilyev
+  email = alexey@vasilyev.email

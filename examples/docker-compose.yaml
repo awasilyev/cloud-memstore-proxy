@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  memstore-proxy:
+    image: ghcr.io/awasilyev/cloud-memstore-proxy:latest
+    container_name: cloud-memstore-proxy
+    restart: unless-stopped
+    environment:
+      # Instance type: 'valkey' or 'redis'
+      INSTANCE_TYPE: "valkey"
+      # Short format (works on GCP with metadata access)
+      INSTANCE_NAME: "my-instance"
+      # Or full format:
+      # INSTANCE_NAME: "projects/my-project/locations/us-central1/instances/my-instance"
+      ENABLE_IAM_AUTH: "true"
+      TLS_SKIP_VERIFY: "true"
+      VERBOSE: "false"
+      LOCAL_ADDR: "0.0.0.0"
+      # GOOGLE_APPLICATION_CREDENTIALS: /credentials/key.json
+    ports:
+      - "6379:6379"
+      - "6380:6380"
+    # Uncomment if using service account key file
+    # volumes:
+    #   - ~/.config/gcloud/application_default_credentials.json:/credentials/key.json:ro
+    networks:
+      - memstore-network
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 6379 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  memstore-network:
+    driver: bridge
+
