@@ -1,7 +1,7 @@
 # Binaries
 cloud-memstore-proxy
-cloud-valkey-proxy
-valkey-auth-proxy
+test-env.sh
+test-discovery
 *.exe
 *.dll
 *.so

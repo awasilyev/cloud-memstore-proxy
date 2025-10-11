@@ -11,6 +11,7 @@ import (
 
 	"github.com/awasilyev/cloud-memstore-proxy/pkg/config"
 	"github.com/awasilyev/cloud-memstore-proxy/pkg/discovery"
+	"github.com/awasilyev/cloud-memstore-proxy/pkg/health"
 	"github.com/awasilyev/cloud-memstore-proxy/pkg/logger"
 	"github.com/awasilyev/cloud-memstore-proxy/pkg/metadata"
 	"github.com/awasilyev/cloud-memstore-proxy/pkg/proxy"
@@ -24,7 +25,8 @@ func main() {
 	flag.StringVar(&cfg.InstanceName, "instance", os.Getenv("INSTANCE_NAME"), "Instance name (format: projects/PROJECT_ID/locations/LOCATION/instances/INSTANCE_ID)")
 	flag.StringVar(&instanceType, "type", getEnvOrDefault("INSTANCE_TYPE", "valkey"), "Instance type: 'valkey' or 'redis'")
 	flag.StringVar(&cfg.LocalAddr, "local-addr", getEnvOrDefault("LOCAL_ADDR", "127.0.0.1"), "Local address to bind to")
-	flag.IntVar(&cfg.StartPort, "start-port", 6379, "Starting port number for the first endpoint")
+	flag.IntVar(&cfg.StartPort, "start-port", getEnvOrDefaultInt("START_PORT", 6379), "Starting port number for the first endpoint")
+	flag.IntVar(&cfg.HealthPort, "health-port", getEnvOrDefaultInt("HEALTH_PORT", 8080), "Health check HTTP server port")
 	flag.BoolVar(&cfg.EnableIAMAuth, "enable-iam-auth", getEnvOrDefaultBool("ENABLE_IAM_AUTH", true), "Enable IAM authentication (for Valkey with IAM_AUTH mode)")
 	flag.BoolVar(&cfg.TLSSkipVerify, "tls-skip-verify", getEnvOrDefaultBool("TLS_SKIP_VERIFY", true), "Skip TLS certificate verification (needed for GCP Memorystore self-signed certs)")
 	flag.BoolVar(&cfg.Verbose, "verbose", getEnvOrDefaultBool("VERBOSE", false), "Enable verbose logging")
@@ -39,10 +41,17 @@ func main() {
 	}
 
 	logger.Init(cfg.Verbose)
-	logger.Info("Starting Valkey Auth Proxy...")
+	logger.Info(fmt.Sprintf("Starting Cloud Memstore Proxy for %s...", cfg.InstanceType))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Start health check server
+	healthServer := health.NewServer(cfg.HealthPort)
+	if err := healthServer.Start(); err != nil {
+		logger.Fatal(fmt.Sprintf("Failed to start health server: %v", err))
+	}
+	defer healthServer.Stop()
 
 	// Resolve instance name (convert short name to full path if needed)
 	resolvedInstanceName, err := resolveInstanceName(ctx, cfg.InstanceName)
@@ -120,6 +129,10 @@ func main() {
 		logger.Info(fmt.Sprintf("Proxy listening on %s:%d -> %s:%d (%s, %s)", cfg.LocalAddr, localPort, endpoint.Host, endpoint.Port, endpoint.Type, tlsStatus))
 	}
 
+	// Mark health server as ready
+	healthServer.SetReady(len(instanceInfo.Endpoints))
+	logger.Info(fmt.Sprintf("All proxies ready. Health endpoints: http://localhost:%d/livez, /readyz, /status", cfg.HealthPort))
+
 	// Wait for termination signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -143,6 +156,18 @@ func getEnvOrDefaultBool(key string, defaultValue bool) bool {
 		return defaultValue
 	}
 	return value == "true" || value == "1" || value == "yes"
+}
+
+func getEnvOrDefaultInt(key string, defaultValue int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	var intValue int
+	if _, err := fmt.Sscanf(value, "%d", &intValue); err == nil {
+		return intValue
+	}
+	return defaultValue
 }
 
 // resolveInstanceName converts a short instance name to full resource path if needed
