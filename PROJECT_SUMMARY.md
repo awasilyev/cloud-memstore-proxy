@@ -248,7 +248,7 @@ containers:
 
 ## Technology Stack
 
-- **Language**: Go 1.21+
+- **Language**: Go 1.25+
 - **APIs**: GCP Memorystore API, GCP Metadata API
 - **Protocols**: TCP, TLS, RESP (Redis)
 - **Container**: Docker (scratch-based)
