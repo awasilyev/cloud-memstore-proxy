@@ -24,7 +24,7 @@ func main() {
 	flag.StringVar(&cfg.InstanceName, "instance", os.Getenv("INSTANCE_NAME"), "Instance name (format: projects/PROJECT_ID/locations/LOCATION/instances/INSTANCE_ID)")
 	flag.StringVar(&instanceType, "type", getEnvOrDefault("INSTANCE_TYPE", "valkey"), "Instance type: 'valkey' or 'redis'")
 	flag.StringVar(&cfg.LocalAddr, "local-addr", getEnvOrDefault("LOCAL_ADDR", "127.0.0.1"), "Local address to bind to")
-	flag.IntVar(&cfg.StartPort, "start-port", 6379, "Starting port number for the first endpoint")
+	flag.IntVar(&cfg.StartPort, "start-port", getEnvOrDefaultInt("START_PORT", 6379), "Starting port number for the first endpoint")
 	flag.BoolVar(&cfg.EnableIAMAuth, "enable-iam-auth", getEnvOrDefaultBool("ENABLE_IAM_AUTH", true), "Enable IAM authentication (for Valkey with IAM_AUTH mode)")
 	flag.BoolVar(&cfg.TLSSkipVerify, "tls-skip-verify", getEnvOrDefaultBool("TLS_SKIP_VERIFY", true), "Skip TLS certificate verification (needed for GCP Memorystore self-signed certs)")
 	flag.BoolVar(&cfg.Verbose, "verbose", getEnvOrDefaultBool("VERBOSE", false), "Enable verbose logging")
@@ -35,11 +35,11 @@ func main() {
 
 	// Validate configuration
 	if cfg.InstanceName == "" {
-		logger.Fatal("Instance name is required. Set via -instance flag or VALKEY_INSTANCE_NAME env variable")
+		logger.Fatal("Instance name is required. Set via -instance flag or INSTANCE_NAME env variable")
 	}
 
 	logger.Init(cfg.Verbose)
-	logger.Info("Starting Valkey Auth Proxy...")
+	logger.Info(fmt.Sprintf("Starting Cloud Memstore Proxy for %s...", cfg.InstanceType))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -143,6 +143,18 @@ func getEnvOrDefaultBool(key string, defaultValue bool) bool {
 		return defaultValue
 	}
 	return value == "true" || value == "1" || value == "yes"
+}
+
+func getEnvOrDefaultInt(key string, defaultValue int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	var intValue int
+	if _, err := fmt.Sscanf(value, "%d", &intValue); err == nil {
+		return intValue
+	}
+	return defaultValue
 }
 
 // resolveInstanceName converts a short instance name to full resource path if needed

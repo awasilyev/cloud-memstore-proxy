@@ -20,8 +20,8 @@ func main() {
 	if *instanceName == "" {
 		fmt.Println("Usage: test-discovery -type <type> -instance <instance-name>")
 		fmt.Println("\nExample:")
-		fmt.Println("  test-discovery -type valkey -instance projects/my-project/locations/us-east1/instances/manual-test")
-		fmt.Println("  test-discovery -type redis -instance projects/my-project/locations/us-east1/instances/redis-langfuse")
+		fmt.Println("  test-discovery -type valkey -instance projects/my-project/locations/us-central1/instances/my-valkey")
+		fmt.Println("  test-discovery -type redis -instance projects/my-project/locations/us-central1/instances/my-redis")
 		os.Exit(1)
 	}
 

@@ -10,9 +10,12 @@ data:
   INSTANCE_NAME: "my-valkey"
   # Or use full format:
   # INSTANCE_NAME: "projects/my-project/locations/us-central1/instances/my-valkey"
+  
+  # All configuration via environment variables
+  LOCAL_ADDR: "0.0.0.0"
+  START_PORT: "6379"
   ENABLE_IAM_AUTH: "true"
   TLS_SKIP_VERIFY: "true"
-  LOCAL_ADDR: "0.0.0.0"
   VERBOSE: "false"
 ---
 apiVersion: apps/v1

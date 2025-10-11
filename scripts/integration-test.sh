@@ -3,7 +3,7 @@
 
 set -e
 
-INSTANCE_NAME="${1:-projects/fetcherr-viva-sandbox/locations/us-east1/instances/manual-test}"
+INSTANCE_NAME="${1:-projects/my-project/locations/us-central1/instances/my-valkey}"
 
 echo "=========================================="
 echo "Cloud Valkey Proxy - Integration Test"
@@ -28,7 +28,7 @@ if [ $DISCOVERY_EXIT -ne 0 ]; then
     echo "  gcloud compute instances set-service-account ${INSTANCE_NAME##*/} \\"
     echo "    --zone us-east1-d \\"
     echo "    --scopes cloud-platform \\"
-    echo "    --project fetcherr-viva-sandbox"
+    echo "    --project PROJECT_ID"
     exit 1
 fi
 

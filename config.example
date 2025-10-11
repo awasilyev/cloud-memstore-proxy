@@ -1,5 +1,6 @@
 # Cloud Memstore Proxy Configuration Example
 # Copy this file to .env and update with your values
+# All flags can be set via environment variables
 
 # Required: Instance type - 'valkey' or 'redis' (default: valkey)
 INSTANCE_TYPE=valkey
@@ -11,7 +12,11 @@ INSTANCE_NAME=my-instance
 # INSTANCE_NAME=projects/my-project/locations/us-central1/instances/my-instance
 
 # Optional: Local address to bind to (default: 127.0.0.1)
+# Use 0.0.0.0 to listen on all interfaces (for containers)
 LOCAL_ADDR=127.0.0.1
+
+# Optional: Starting port for first endpoint (default: 6379)
+START_PORT=6379
 
 # Optional: Enable IAM authentication for Valkey (default: true)
 # For Redis, password auth is automatic

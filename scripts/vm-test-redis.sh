@@ -2,7 +2,7 @@
 # Test script for Redis instance
 
 PROJECT_NAME="${PROJECT_NAME:-your-gcp-project}"
-INSTANCE_NAME="${1:-projects/${PROJECT_NAME}/locations/us-east1/instances/redis-langfuse}"
+INSTANCE_NAME="${1:-projects/my-project/locations/us-central1/instances/my-redis}"
 
 echo "=========================================="
 echo "Cloud Memstore Proxy - Redis Test"

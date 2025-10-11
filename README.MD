@@ -24,31 +24,45 @@ A lightweight, high-performance proxy service for **Google Cloud Memorystore** i
 ### Valkey Instance (with IAM auth)
 
 ```bash
-# Short name (on GCP)
+# Using environment variables (recommended for containers)
 docker run -d -p 6379:6379 \
-  -e INSTANCE_NAME="my-valkey" \
   -e INSTANCE_TYPE="valkey" \
+  -e INSTANCE_NAME="my-valkey" \
+  -e LOCAL_ADDR="0.0.0.0" \
   ghcr.io/awasilyev/cloud-memstore-proxy:latest
 
-# Full name
+# Using command-line flags
 ./cloud-memstore-proxy \
   -type valkey \
-  -instance "projects/my-project/locations/us-central1/instances/my-valkey"
+  -instance "my-valkey" \
+  -local-addr "0.0.0.0"
 ```
 
 ### Redis Instance (with password auth)
 
 ```bash
-# Short name (on GCP)
+# Using environment variables (recommended)
 docker run -d -p 6379:6379 \
-  -e INSTANCE_NAME="my-redis" \
   -e INSTANCE_TYPE="redis" \
+  -e INSTANCE_NAME="my-redis" \
+  -e LOCAL_ADDR="0.0.0.0" \
   ghcr.io/awasilyev/cloud-memstore-proxy:latest
 
-# Full name
+# Using command-line flags
 ./cloud-memstore-proxy \
   -type redis \
-  -instance "projects/my-project/locations/us-central1/instances/my-redis"
+  -instance "my-redis"
+```
+
+### Custom Port Configuration
+
+```bash
+# Start on port 7000 instead of default 6379
+docker run -d -p 7000:7000 -p 7001:7001 \
+  -e INSTANCE_TYPE="valkey" \
+  -e INSTANCE_NAME="my-valkey" \
+  -e START_PORT="7000" \
+  ghcr.io/awasilyev/cloud-memstore-proxy:latest
 ```
 
 **Note**: The proxy automatically:
@@ -56,6 +70,7 @@ docker run -d -p 6379:6379 \
 - Retrieves password for Redis instances
 - Configures TLS if enabled
 - Discovers all endpoints
+- **All parameters configurable via env vars or flags**
 
 ## Configuration
 
@@ -78,9 +93,12 @@ docker run -d -p 6379:6379 \
 | `INSTANCE_NAME` | Instance name (short or full format) | `-instance` |
 | `INSTANCE_TYPE` | Instance type (`valkey` or `redis`) | `-type` |
 | `LOCAL_ADDR` | Local address to bind to | `-local-addr` |
+| `START_PORT` | Starting port for first endpoint | `-start-port` |
 | `ENABLE_IAM_AUTH` | Enable IAM authentication (Valkey only) | `-enable-iam-auth` |
 | `TLS_SKIP_VERIFY` | Skip TLS certificate verification | `-tls-skip-verify` |
 | `VERBOSE` | Enable verbose logging | `-verbose` |
+
+**Note**: All flags can be configured via environment variables. Command-line flags take precedence over environment variables.
 
 ### Instance Name Format
 

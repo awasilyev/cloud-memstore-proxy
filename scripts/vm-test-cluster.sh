@@ -1,7 +1,7 @@
 #!/bin/bash
 # Test script for Valkey cluster mode
 
-INSTANCE_NAME="${1:-projects/fetcherr-viva-sandbox/locations/us-east1/instances/manual-test}"
+INSTANCE_NAME="${1:-projects/my-project/locations/us-central1/instances/my-valkey}"
 
 echo "=========================================="
 echo "Cloud Valkey Proxy - Cluster Mode Test"
