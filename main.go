@@ -27,7 +27,6 @@ func main() {
 	flag.StringVar(&cfg.LocalAddr, "local-addr", getEnvOrDefault("LOCAL_ADDR", "127.0.0.1"), "Local address to bind to")
 	flag.IntVar(&cfg.StartPort, "start-port", getEnvOrDefaultInt("START_PORT", 6379), "Starting port number for the first endpoint")
 	flag.IntVar(&cfg.HealthPort, "health-port", getEnvOrDefaultInt("HEALTH_PORT", 8080), "Health check HTTP server port")
-	flag.BoolVar(&cfg.EnableIAMAuth, "enable-iam-auth", getEnvOrDefaultBool("ENABLE_IAM_AUTH", true), "Enable IAM authentication (for Valkey with IAM_AUTH mode)")
 	flag.BoolVar(&cfg.TLSSkipVerify, "tls-skip-verify", getEnvOrDefaultBool("TLS_SKIP_VERIFY", true), "Skip TLS certificate verification (needed for GCP Memorystore self-signed certs)")
 	flag.BoolVar(&cfg.Verbose, "verbose", getEnvOrDefaultBool("VERBOSE", false), "Enable verbose logging")
 	flag.Parse()
@@ -65,7 +64,6 @@ func main() {
 
 	logger.Info(fmt.Sprintf("Instance: %s", resolvedInstanceName))
 	logger.Info(fmt.Sprintf("Local address: %s", cfg.LocalAddr))
-	logger.Info(fmt.Sprintf("IAM Auth: %v", cfg.EnableIAMAuth))
 
 	// Discover instance endpoints and configuration based on type
 	logger.Info(fmt.Sprintf("Discovering %s instance configuration...", cfg.InstanceType))
@@ -102,6 +100,9 @@ func main() {
 
 	// Start proxy servers for each endpoint
 	proxyManager := proxy.NewManager(cfg)
+
+	// Set authorization mode from discovery
+	proxyManager.SetAuthorizationMode(instanceInfo.AuthorizationMode)
 
 	// Configure TLS if required
 	if instanceInfo.RequiresTLS {
