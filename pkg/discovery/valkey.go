@@ -177,8 +177,7 @@ func (d *GCPDiscoverer) getInstance(ctx context.Context, instanceName string) (*
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := d.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make request: %w", err)
 	}
@@ -245,8 +244,7 @@ func (d *GCPDiscoverer) getCACertificate(ctx context.Context, instanceName strin
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := d.httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to make request: %w", err)
 	}

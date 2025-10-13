@@ -2,6 +2,8 @@ package discovery
 
 import (
 	"context"
+	"net/http"
+	"time"
 )
 
 // Endpoint represents a Memorystore endpoint
@@ -28,9 +30,26 @@ type Discoverer interface {
 }
 
 // GCPDiscoverer implements Discoverer for GCP Memorystore
-type GCPDiscoverer struct{}
+type GCPDiscoverer struct {
+	httpClient *http.Client
+}
 
-// NewGCPDiscoverer creates a new GCP discoverer
-func NewGCPDiscoverer() *GCPDiscoverer {
-	return &GCPDiscoverer{}
+// NewGCPDiscoverer creates a new GCP discoverer with configured timeout
+func NewGCPDiscoverer(timeoutSeconds int) *GCPDiscoverer {
+	return &GCPDiscoverer{
+		httpClient: &http.Client{
+			Timeout: time.Duration(timeoutSeconds) * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        10,
+				MaxIdleConnsPerHost: 5,
+				IdleConnTimeout:     30 * time.Second,
+				DisableKeepAlives:   false,
+			},
+		},
+	}
+}
+
+// NewGCPDiscovererWithDefaults creates a new GCP discoverer with default 30s timeout
+func NewGCPDiscovererWithDefaults() *GCPDiscoverer {
+	return NewGCPDiscoverer(30)
 }

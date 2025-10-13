@@ -26,7 +26,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	discoverer := discovery.NewGCPDiscoverer()
+	discoverer := discovery.NewGCPDiscoverer(30) // 30 second timeout
 
 	fmt.Printf("Discovering %s instance: %s\n\n", *instanceType, *instanceName)
 

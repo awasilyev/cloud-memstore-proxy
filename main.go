@@ -27,6 +27,7 @@ func main() {
 	flag.StringVar(&cfg.LocalAddr, "local-addr", getEnvOrDefault("LOCAL_ADDR", "127.0.0.1"), "Local address to bind to")
 	flag.IntVar(&cfg.StartPort, "start-port", getEnvOrDefaultInt("START_PORT", 6379), "Starting port number for the first endpoint")
 	flag.IntVar(&cfg.HealthPort, "health-port", getEnvOrDefaultInt("HEALTH_PORT", 8080), "Health check HTTP server port")
+	flag.IntVar(&cfg.APITimeout, "api-timeout", getEnvOrDefaultInt("API_TIMEOUT", 30), "Timeout for GCP API calls in seconds")
 	flag.BoolVar(&cfg.TLSSkipVerify, "tls-skip-verify", getEnvOrDefaultBool("TLS_SKIP_VERIFY", true), "Skip TLS certificate verification (needed for GCP Memorystore self-signed certs)")
 	flag.BoolVar(&cfg.Verbose, "verbose", getEnvOrDefaultBool("VERBOSE", false), "Enable verbose logging")
 	flag.Parse()
@@ -67,7 +68,8 @@ func main() {
 
 	// Discover instance endpoints and configuration based on type
 	logger.Info(fmt.Sprintf("Discovering %s instance configuration...", cfg.InstanceType))
-	discoverer := discovery.NewGCPDiscoverer()
+	logger.Info(fmt.Sprintf("API timeout: %ds", cfg.APITimeout))
+	discoverer := discovery.NewGCPDiscoverer(cfg.APITimeout)
 
 	var instanceInfo *discovery.InstanceInfo
 
