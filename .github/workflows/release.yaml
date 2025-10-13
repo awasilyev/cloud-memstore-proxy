@@ -129,6 +129,7 @@ jobs:
         uses: actions/download-artifact@v5
         with:
           path: artifacts
+          pattern: cloud-memstore-proxy-*
 
       - name: Display structure
         run: ls -R artifacts/
