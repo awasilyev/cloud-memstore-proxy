@@ -11,6 +11,7 @@ concurrency:
 permissions:
   contents: read
   pull-requests: write
+  packages: write
 
 jobs:
   lint:
@@ -55,11 +56,101 @@ jobs:
       - name: Run tests
         run: go test -v -race -coverprofile=coverage.txt ./...
 
-      - name: Check build
-        run: |
-          CGO_ENABLED=0 go build -o cloud-memstore-proxy main.go
-          ./cloud-memstore-proxy -h || true
+  build-docker:
+    name: Build and Push PR Docker Image
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
 
-      - name: Verify Docker build
-        run: docker build -t test .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=pr,prefix=pr-
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Comment PR with image tag
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.issue.number;
+            const imageTag = `ghcr.io/${{ github.repository }}:pr-${prNumber}`;
+            
+            const comment = `## 🐋 Docker Image Built Successfully
+            
+            Your PR Docker image has been built and pushed!
+            
+            **Image Tag:**
+            \`\`\`
+            ${imageTag}
+            \`\`\`
+            
+            **Pull and test:**
+            \`\`\`bash
+            docker pull ${imageTag}
+            docker run ${imageTag} -h
+            \`\`\`
+            
+            **Use in Helm chart:**
+            \`\`\`yaml
+            cloud_memstore_proxy:
+              image:
+                repository: ghcr.io/${{ github.repository }}
+                tag: pr-${prNumber}
+            \`\`\`
+            `;
+            
+            // Find existing comment
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+            
+            const botComment = comments.data.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('Docker Image Built Successfully')
+            );
+            
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: comment
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: comment
+              });
+            }
 

@@ -18,12 +18,13 @@ import (
 
 // Manager manages multiple proxy instances
 type Manager struct {
-	config       *config.Config
-	proxies      []*Proxy
-	tokenSource  *auth.IAMTokenProvider
-	authPassword string // For Redis password auth
-	tlsConfig    *tls.Config
-	mu           sync.Mutex
+	config            *config.Config
+	proxies           []*Proxy
+	tokenSource       *auth.IAMTokenProvider
+	authPassword      string // For Redis password auth
+	authorizationMode string // From discovery: IAM_AUTH, PASSWORD_AUTH, AUTH_DISABLED
+	tlsConfig         *tls.Config
+	mu                sync.Mutex
 }
 
 // Proxy represents a single proxy instance
@@ -90,19 +91,26 @@ func (m *Manager) SetAuthPassword(password string) {
 	}
 }
 
+// SetAuthorizationMode sets the authorization mode from discovery
+func (m *Manager) SetAuthorizationMode(mode string) {
+	m.authorizationMode = mode
+	logger.Info(fmt.Sprintf("Authorization mode: %s", mode))
+}
+
 // AddProxy adds and starts a new proxy
 func (m *Manager) AddProxy(ctx context.Context, endpoint discovery.Endpoint, localPort int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Initialize token source if IAM auth is enabled AND no password is set (shared across all proxies)
+	// Initialize token source if IAM auth is discovered AND no password is set (shared across all proxies)
 	// Password auth takes precedence over IAM auth
-	if m.config.EnableIAMAuth && m.authPassword == "" && m.tokenSource == nil {
+	if m.authorizationMode == "IAM_AUTH" && m.authPassword == "" && m.tokenSource == nil {
 		tokenSource, err := auth.NewIAMTokenProvider(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to create IAM token provider: %w", err)
 		}
 		m.tokenSource = tokenSource
+		logger.Info("IAM authentication initialized")
 	}
 
 	localAddr := fmt.Sprintf("%s:%d", m.config.LocalAddr, localPort)
@@ -265,8 +273,8 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 			return
 		}
 		logger.Debug("Password authentication successful")
-	} else if p.config.EnableIAMAuth && p.tokenSource != nil {
-		// IAM authentication (for Valkey with IAM_AUTH)
+	} else if p.tokenSource != nil {
+		// IAM authentication (for Valkey with IAM_AUTH authorization mode)
 		if err := p.authenticateIAM(remoteConn); err != nil {
 			logger.Error(fmt.Sprintf("IAM authentication failed: %v", err))
 			return
