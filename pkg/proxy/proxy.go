@@ -17,6 +17,10 @@ import (
 	"github.com/awasilyev/cloud-memstore-proxy/pkg/logger"
 )
 
+const (
+	authResponseBufferSize = 1024 // Buffer size for reading AUTH command responses
+)
+
 // Manager manages multiple proxy instances
 type Manager struct {
 	config            *config.Config
@@ -214,45 +218,54 @@ func (m *Manager) DiscoverAndAddClusterNodes(ctx context.Context, primaryEndpoin
 	// Enable cluster mode
 	m.isClusterMode = true
 
-	// Create proxies for each new node
-	addedCount := 0
-	for i, node := range newNodes {
-		localPort := startPort + i
+	// Prepare endpoint list before creating proxies
+	endpoints := make([]discovery.Endpoint, 0, len(newNodes))
+	for _, node := range newNodes {
 		endpoint := discovery.Endpoint{
 			Host: extractHost(node.Address),
 			Port: node.Port,
 			Type: fmt.Sprintf("cluster-%s", node.Role),
 		}
+		endpoints = append(endpoints, endpoint)
+	}
 
-		// Create proxy without holding the lock (AddProxy needs it)
-		m.mu.Unlock()
+	// Release the lock before creating proxies (AddProxy acquires it)
+	m.mu.Unlock()
+	defer m.mu.Lock()
+
+	// Create proxies for each new node
+	addedCount := 0
+	for i, endpoint := range endpoints {
+		localPort := startPort + i
 		err := m.AddProxy(ctx, endpoint, localPort)
-		m.mu.Lock()
 
 		if err != nil {
-			logger.Error(fmt.Sprintf("Failed to create proxy for cluster node %s: %v", node.Address, err))
+			logger.Error(fmt.Sprintf("Failed to create proxy for cluster node %s:%d: %v", endpoint.Host, endpoint.Port, err))
 			continue
 		}
 
-		logger.Info(fmt.Sprintf("Added cluster node proxy: %s:%d -> %s (%s)",
-			m.config.LocalAddr, localPort, node.Address, node.Role))
+		logger.Info(fmt.Sprintf("Added cluster node proxy: %s:%d -> %s:%d (%s)",
+			m.config.LocalAddr, localPort, endpoint.Host, endpoint.Port, endpoint.Type))
 		addedCount++
 	}
 
 	return addedCount, nil
 }
 
-// authenticatePasswordOnConn performs password authentication on a connection
-func (m *Manager) authenticatePasswordOnConn(conn net.Conn, password string) error {
-	authCmd := fmt.Sprintf("*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n", len(password), password)
+// buildAuthCommand constructs a RESP AUTH command for the given credential
+func buildAuthCommand(credential string) string {
+	return fmt.Sprintf("*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n", len(credential), credential)
+}
 
+// sendAuthCommand sends an AUTH command and validates the response
+func sendAuthCommand(conn net.Conn, authCmd string) error {
 	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	if _, err := conn.Write([]byte(authCmd)); err != nil {
 		return fmt.Errorf("failed to send AUTH command: %w", err)
 	}
 
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	response := make([]byte, 1024)
+	response := make([]byte, authResponseBufferSize)
 	n, err := conn.Read(response)
 	if err != nil {
 		return fmt.Errorf("failed to read AUTH response: %w", err)
@@ -266,6 +279,12 @@ func (m *Manager) authenticatePasswordOnConn(conn net.Conn, password string) err
 	}
 
 	return fmt.Errorf("authentication failed: %s", respStr)
+}
+
+// authenticatePasswordOnConn performs password authentication on a connection
+func (m *Manager) authenticatePasswordOnConn(conn net.Conn, password string) error {
+	authCmd := buildAuthCommand(password)
+	return sendAuthCommand(conn, authCmd)
 }
 
 // authenticateIAMOnConn performs IAM authentication on a connection
@@ -275,28 +294,8 @@ func (m *Manager) authenticateIAMOnConn(ctx context.Context, conn net.Conn) erro
 		return fmt.Errorf("failed to get IAM token: %w", err)
 	}
 
-	authCmd := fmt.Sprintf("*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n", len(token), token)
-
-	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if _, err := conn.Write([]byte(authCmd)); err != nil {
-		return fmt.Errorf("failed to send AUTH command: %w", err)
-	}
-
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	response := make([]byte, 1024)
-	n, err := conn.Read(response)
-	if err != nil {
-		return fmt.Errorf("failed to read AUTH response: %w", err)
-	}
-
-	respStr := string(response[:n])
-	if len(respStr) >= 5 && respStr[:5] == "+OK\r\n" {
-		conn.SetReadDeadline(time.Time{})
-		conn.SetWriteDeadline(time.Time{})
-		return nil
-	}
-
-	return fmt.Errorf("authentication failed: %s", respStr)
+	authCmd := buildAuthCommand(token)
+	return sendAuthCommand(conn, authCmd)
 }
 
 // extractHost extracts the host part from "host:port" address
@@ -457,7 +456,7 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 }
 
 // handleSimpleConnection handles bidirectional traffic without protocol inspection
-// This is used for non-cluster instances or when IAM auth is not enabled
+// This is used for non-cluster instances.
 func (p *Proxy) handleSimpleConnection(clientConn, remoteConn net.Conn) {
 	errChan := make(chan error, 2)
 
@@ -547,32 +546,6 @@ func (p *Proxy) authenticateIAM(conn net.Conn) error {
 		return fmt.Errorf("failed to get IAM token: %w", err)
 	}
 
-	// Send AUTH command using RESP protocol
-	// Format: *2\r\n$4\r\nAUTH\r\n$<length>\r\n<token>\r\n
-	authCmd := fmt.Sprintf("*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n", len(token), token)
-
-	// Set write deadline
-	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if _, err := conn.Write([]byte(authCmd)); err != nil {
-		return fmt.Errorf("failed to send AUTH command: %w", err)
-	}
-
-	// Read response
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	response := make([]byte, 1024)
-	n, err := conn.Read(response)
-	if err != nil {
-		return fmt.Errorf("failed to read AUTH response: %w", err)
-	}
-
-	// Check for success response (+OK\r\n)
-	respStr := string(response[:n])
-	if len(respStr) >= 5 && respStr[:5] == "+OK\r\n" {
-		// Clear deadlines after successful auth
-		conn.SetReadDeadline(time.Time{})
-		conn.SetWriteDeadline(time.Time{})
-		return nil
-	}
-
-	return fmt.Errorf("authentication failed: %s", respStr)
+	authCmd := buildAuthCommand(token)
+	return sendAuthCommand(conn, authCmd)
 }

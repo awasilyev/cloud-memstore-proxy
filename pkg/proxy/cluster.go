@@ -15,8 +15,8 @@ type ClusterNode struct {
 	ID      string
 	Address string // IP:port format
 	Port    int
-	Flags   string // master, slave, myself, etc.
-	Role    string // master or slave
+	Flags   string // master, replica, myself, etc.
+	Role    string // master or replica
 }
 
 // DiscoverClusterTopology connects to a cluster node and discovers all cluster members
@@ -69,8 +69,12 @@ func DiscoverClusterTopology(conn net.Conn) ([]ClusterNode, error) {
 	}
 
 	// Read trailing \r\n
-	reader.ReadByte()
-	reader.ReadByte()
+	if _, err := reader.ReadByte(); err != nil {
+		return nil, fmt.Errorf("failed to read trailing \\r: %w", err)
+	}
+	if _, err := reader.ReadByte(); err != nil {
+		return nil, fmt.Errorf("failed to read trailing \\n: %w", err)
+	}
 
 	// Clear deadlines
 	conn.SetReadDeadline(time.Time{})
@@ -117,11 +121,14 @@ func parseClusterNodes(output string) ([]ClusterNode, error) {
 		var port int
 		parts := strings.Split(address, ":")
 		if len(parts) == 2 {
-			fmt.Sscanf(parts[1], "%d", &port)
+			if _, err := fmt.Sscanf(parts[1], "%d", &port); err != nil {
+				logger.Debug(fmt.Sprintf("Failed to parse port from %s: %v", address, err))
+				continue
+			}
 		}
 
 		// Determine role
-		role := "slave"
+		role := "replica"
 		if strings.Contains(flags, "master") {
 			role = "master"
 		}
