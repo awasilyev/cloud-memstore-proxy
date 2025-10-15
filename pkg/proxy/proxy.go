@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +15,10 @@ import (
 	"github.com/awasilyev/cloud-memstore-proxy/pkg/config"
 	"github.com/awasilyev/cloud-memstore-proxy/pkg/discovery"
 	"github.com/awasilyev/cloud-memstore-proxy/pkg/logger"
+)
+
+const (
+	authResponseBufferSize = 1024 // Buffer size for reading AUTH command responses
 )
 
 // Manager manages multiple proxy instances
@@ -24,22 +29,26 @@ type Manager struct {
 	authPassword      string // For Redis password auth
 	authorizationMode string // From discovery: IAM_AUTH, PASSWORD_AUTH, AUTH_DISABLED
 	tlsConfig         *tls.Config
+	nodeMap           map[string]string // Maps remote "ip:port" -> local "ip:port" for cluster redirects
+	isClusterMode     bool              // True if cluster mode is detected
 	mu                sync.Mutex
 }
 
 // Proxy represents a single proxy instance
 type Proxy struct {
-	localAddr    string
-	remoteAddr   string
-	endpoint     discovery.Endpoint
-	listener     net.Listener
-	config       *config.Config
-	tokenSource  *auth.IAMTokenProvider
-	authPassword string // For Redis password auth
-	tlsConfig    *tls.Config
-	connections  sync.WaitGroup
-	shutdown     chan struct{}
-	shutdownOnce sync.Once
+	localAddr     string
+	remoteAddr    string
+	endpoint      discovery.Endpoint
+	listener      net.Listener
+	config        *config.Config
+	tokenSource   *auth.IAMTokenProvider
+	authPassword  string // For Redis password auth
+	tlsConfig     *tls.Config
+	isClusterMode bool              // True if cluster mode redirect rewriting is enabled
+	nodeMap       map[string]string // Maps remote "ip:port" -> local "ip:port" for cluster redirects
+	connections   sync.WaitGroup
+	shutdown      chan struct{}
+	shutdownOnce  sync.Once
 }
 
 // NewManager creates a new proxy manager
@@ -47,6 +56,7 @@ func NewManager(cfg *config.Config) *Manager {
 	return &Manager{
 		config:  cfg,
 		proxies: make([]*Proxy, 0),
+		nodeMap: make(map[string]string),
 	}
 }
 
@@ -117,19 +127,24 @@ func (m *Manager) AddProxy(ctx context.Context, endpoint discovery.Endpoint, loc
 	remoteAddr := fmt.Sprintf("%s:%d", endpoint.Host, endpoint.Port)
 
 	proxy := &Proxy{
-		localAddr:    localAddr,
-		remoteAddr:   remoteAddr,
-		endpoint:     endpoint,
-		config:       m.config,
-		tokenSource:  m.tokenSource,
-		authPassword: m.authPassword,
-		tlsConfig:    m.tlsConfig,
-		shutdown:     make(chan struct{}),
+		localAddr:     localAddr,
+		remoteAddr:    remoteAddr,
+		endpoint:      endpoint,
+		config:        m.config,
+		tokenSource:   m.tokenSource,
+		authPassword:  m.authPassword,
+		tlsConfig:     m.tlsConfig,
+		isClusterMode: m.isClusterMode,
+		nodeMap:       m.nodeMap,
+		shutdown:      make(chan struct{}),
 	}
 
 	if err := proxy.Start(); err != nil {
 		return err
 	}
+
+	// Track this node in the map for cluster redirect rewriting
+	m.nodeMap[remoteAddr] = localAddr
 
 	m.proxies = append(m.proxies, proxy)
 	return nil
@@ -143,6 +158,152 @@ func (m *Manager) Shutdown() {
 	for _, proxy := range m.proxies {
 		proxy.Shutdown()
 	}
+}
+
+// DiscoverAndAddClusterNodes discovers all nodes in a cluster and creates proxies for them
+// Returns the number of additional nodes added (excluding the primary endpoint)
+func (m *Manager) DiscoverAndAddClusterNodes(ctx context.Context, primaryEndpoint discovery.Endpoint, startPort int) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Connect to the primary endpoint to discover cluster topology
+	remoteAddr := net.JoinHostPort(primaryEndpoint.Host, fmt.Sprintf("%d", primaryEndpoint.Port))
+
+	var conn net.Conn
+	var err error
+
+	if m.tlsConfig != nil {
+		dialer := &net.Dialer{Timeout: 5 * time.Second}
+		conn, err = tls.DialWithDialer(dialer, "tcp", remoteAddr, m.tlsConfig)
+	} else {
+		conn, err = net.DialTimeout("tcp", remoteAddr, 5*time.Second)
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("failed to connect to primary endpoint: %w", err)
+	}
+	defer conn.Close()
+
+	// Authenticate before running CLUSTER NODES
+	if m.authPassword != "" {
+		if err := m.authenticatePasswordOnConn(conn, m.authPassword); err != nil {
+			return 0, fmt.Errorf("authentication failed: %w", err)
+		}
+	} else if m.tokenSource != nil {
+		if err := m.authenticateIAMOnConn(ctx, conn); err != nil {
+			return 0, fmt.Errorf("IAM authentication failed: %w", err)
+		}
+	}
+
+	// Discover cluster nodes
+	nodes, err := DiscoverClusterTopology(conn)
+	if err != nil {
+		return 0, fmt.Errorf("failed to discover cluster topology: %w", err)
+	}
+
+	if len(nodes) == 0 {
+		return 0, fmt.Errorf("no cluster nodes found")
+	}
+
+	logger.Info(fmt.Sprintf("Discovered %d cluster nodes", len(nodes)))
+
+	// Filter out the current node and duplicates
+	newNodes := FilterUniqueNodes(nodes, remoteAddr)
+
+	if len(newNodes) == 0 {
+		logger.Info("No additional cluster nodes to proxy (single-node cluster)")
+		return 0, nil
+	}
+
+	// Enable cluster mode
+	m.isClusterMode = true
+
+	// Prepare endpoint list before creating proxies
+	endpoints := make([]discovery.Endpoint, 0, len(newNodes))
+	for _, node := range newNodes {
+		endpoint := discovery.Endpoint{
+			Host: extractHost(node.Address),
+			Port: node.Port,
+			Type: fmt.Sprintf("cluster-%s", node.Role),
+		}
+		endpoints = append(endpoints, endpoint)
+	}
+
+	// Release the lock before creating proxies (AddProxy acquires it)
+	m.mu.Unlock()
+	defer m.mu.Lock()
+
+	// Create proxies for each new node
+	addedCount := 0
+	for i, endpoint := range endpoints {
+		localPort := startPort + i
+		err := m.AddProxy(ctx, endpoint, localPort)
+
+		if err != nil {
+			logger.Error(fmt.Sprintf("Failed to create proxy for cluster node %s:%d: %v", endpoint.Host, endpoint.Port, err))
+			continue
+		}
+
+		logger.Info(fmt.Sprintf("Added cluster node proxy: %s:%d -> %s:%d (%s)",
+			m.config.LocalAddr, localPort, endpoint.Host, endpoint.Port, endpoint.Type))
+		addedCount++
+	}
+
+	return addedCount, nil
+}
+
+// buildAuthCommand constructs a RESP AUTH command for the given credential
+func buildAuthCommand(credential string) string {
+	return fmt.Sprintf("*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n", len(credential), credential)
+}
+
+// sendAuthCommand sends an AUTH command and validates the response
+func sendAuthCommand(conn net.Conn, authCmd string) error {
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if _, err := conn.Write([]byte(authCmd)); err != nil {
+		return fmt.Errorf("failed to send AUTH command: %w", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	response := make([]byte, authResponseBufferSize)
+	n, err := conn.Read(response)
+	if err != nil {
+		return fmt.Errorf("failed to read AUTH response: %w", err)
+	}
+
+	respStr := string(response[:n])
+	if len(respStr) >= 5 && respStr[:5] == "+OK\r\n" {
+		conn.SetReadDeadline(time.Time{})
+		conn.SetWriteDeadline(time.Time{})
+		return nil
+	}
+
+	return fmt.Errorf("authentication failed: %s", respStr)
+}
+
+// authenticatePasswordOnConn performs password authentication on a connection
+func (m *Manager) authenticatePasswordOnConn(conn net.Conn, password string) error {
+	authCmd := buildAuthCommand(password)
+	return sendAuthCommand(conn, authCmd)
+}
+
+// authenticateIAMOnConn performs IAM authentication on a connection
+func (m *Manager) authenticateIAMOnConn(ctx context.Context, conn net.Conn) error {
+	token, err := m.tokenSource.GetToken(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get IAM token: %w", err)
+	}
+
+	authCmd := buildAuthCommand(token)
+	return sendAuthCommand(conn, authCmd)
+}
+
+// extractHost extracts the host part from "host:port" address
+func extractHost(address string) string {
+	if idx := strings.LastIndex(address, ":"); idx != -1 {
+		return address[:idx]
+	}
+	return address
 }
 
 // Start starts the proxy server
@@ -282,14 +443,30 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 		logger.Debug("IAM authentication successful")
 	}
 
-	// Start bidirectional copy
+	// Choose connection handling strategy based on cluster mode
+	if p.isClusterMode {
+		// Cluster mode: intercept server responses and rewrite MOVED/ASK redirects
+		p.handleClusterConnection(clientConn, remoteConn)
+	} else {
+		// Non-cluster mode: simple bidirectional copy (current behavior)
+		p.handleSimpleConnection(clientConn, remoteConn)
+	}
+
+	logger.Debug(fmt.Sprintf("Connection closed: %s", clientConn.RemoteAddr()))
+}
+
+// handleSimpleConnection handles bidirectional traffic without protocol inspection
+// This is used for non-cluster instances.
+func (p *Proxy) handleSimpleConnection(clientConn, remoteConn net.Conn) {
 	errChan := make(chan error, 2)
 
+	// Client -> Server
 	go func() {
 		_, err := io.Copy(remoteConn, clientConn)
 		errChan <- err
 	}()
 
+	// Server -> Client
 	go func() {
 		_, err := io.Copy(clientConn, remoteConn)
 		errChan <- err
@@ -297,8 +474,65 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 
 	// Wait for either direction to complete
 	<-errChan
+}
 
-	logger.Debug(fmt.Sprintf("Connection closed: %s", clientConn.RemoteAddr()))
+// handleClusterConnection handles bidirectional traffic with RESP protocol inspection
+// Intercepts and rewrites MOVED/ASK responses to use local proxy addresses
+func (p *Proxy) handleClusterConnection(clientConn, remoteConn net.Conn) {
+	errChan := make(chan error, 2)
+
+	// Client -> Server: simple copy (no interception needed)
+	go func() {
+		_, err := io.Copy(remoteConn, clientConn)
+		if err != nil {
+			logger.Debug(fmt.Sprintf("Client->Server copy error: %v", err))
+		}
+		errChan <- err
+	}()
+
+	// Server -> Client: parse RESP and rewrite redirects
+	go func() {
+		err := p.proxyServerResponses(remoteConn, clientConn)
+		if err != nil && err != io.EOF {
+			logger.Debug(fmt.Sprintf("Server->Client proxy error: %v", err))
+		}
+		errChan <- err
+	}()
+
+	// Wait for either direction to complete
+	<-errChan
+}
+
+// proxyServerResponses reads RESP responses from server and rewrites MOVED/ASK redirects
+func (p *Proxy) proxyServerResponses(serverConn, clientConn net.Conn) error {
+	respReader := NewRESPReader(serverConn)
+
+	for {
+		// Read a RESP value from the server
+		value, err := respReader.ReadValue()
+		if err != nil {
+			if err == io.EOF {
+				return err
+			}
+			// If not EOF, it might be a parse error or connection issue
+			return fmt.Errorf("failed to read RESP value: %w", err)
+		}
+
+		// Check if this is a redirect error and rewrite if needed
+		if value.IsRedirectError() {
+			if value.RewriteRedirectError(p.nodeMap) {
+				logger.Debug(fmt.Sprintf("Rewrote redirect: %s", value.Str))
+			} else {
+				logger.Debug(fmt.Sprintf("Redirect not rewritten (node not in map): %s", value.Str))
+			}
+		}
+
+		// Serialize and send to client
+		data := value.Serialize()
+		if _, err := clientConn.Write(data); err != nil {
+			return fmt.Errorf("failed to write to client: %w", err)
+		}
+	}
 }
 
 // authenticateIAM performs IAM authentication with Valkey
@@ -312,32 +546,6 @@ func (p *Proxy) authenticateIAM(conn net.Conn) error {
 		return fmt.Errorf("failed to get IAM token: %w", err)
 	}
 
-	// Send AUTH command using RESP protocol
-	// Format: *2\r\n$4\r\nAUTH\r\n$<length>\r\n<token>\r\n
-	authCmd := fmt.Sprintf("*2\r\n$4\r\nAUTH\r\n$%d\r\n%s\r\n", len(token), token)
-
-	// Set write deadline
-	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if _, err := conn.Write([]byte(authCmd)); err != nil {
-		return fmt.Errorf("failed to send AUTH command: %w", err)
-	}
-
-	// Read response
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	response := make([]byte, 1024)
-	n, err := conn.Read(response)
-	if err != nil {
-		return fmt.Errorf("failed to read AUTH response: %w", err)
-	}
-
-	// Check for success response (+OK\r\n)
-	respStr := string(response[:n])
-	if len(respStr) >= 5 && respStr[:5] == "+OK\r\n" {
-		// Clear deadlines after successful auth
-		conn.SetReadDeadline(time.Time{})
-		conn.SetWriteDeadline(time.Time{})
-		return nil
-	}
-
-	return fmt.Errorf("authentication failed: %s", respStr)
+	authCmd := buildAuthCommand(token)
+	return sendAuthCommand(conn, authCmd)
 }

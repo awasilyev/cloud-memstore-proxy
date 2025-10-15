@@ -132,8 +132,24 @@ func main() {
 		logger.Info(fmt.Sprintf("Proxy listening on %s:%d -> %s:%d (%s, %s)", cfg.LocalAddr, localPort, endpoint.Host, endpoint.Port, endpoint.Type, tlsStatus))
 	}
 
+	// Discover and proxy cluster nodes if this is a cluster with IAM auth
+	totalProxies := len(instanceInfo.Endpoints)
+	if instanceInfo.AuthorizationMode == "IAM_AUTH" && len(instanceInfo.Endpoints) > 0 {
+		logger.Info("Checking for cluster mode...")
+		nextPort := cfg.StartPort + len(instanceInfo.Endpoints)
+		clusterNodeCount, err := proxyManager.DiscoverAndAddClusterNodes(ctx, instanceInfo.Endpoints[0], nextPort)
+		if err != nil {
+			logger.Debug(fmt.Sprintf("Not a cluster or discovery failed: %v", err))
+		} else if clusterNodeCount > 0 {
+			logger.Info(fmt.Sprintf("Cluster mode detected: created proxies for %d additional nodes", clusterNodeCount))
+			totalProxies += clusterNodeCount
+		} else {
+			logger.Info("Single-node instance (not a cluster)")
+		}
+	}
+
 	// Mark health server as ready
-	healthServer.SetReady(len(instanceInfo.Endpoints))
+	healthServer.SetReady(totalProxies)
 	logger.Info(fmt.Sprintf("All proxies ready. Health endpoints: http://localhost:%d/livez, /readyz, /status", cfg.HealthPort))
 
 	// Wait for termination signal
