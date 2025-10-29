@@ -30,6 +30,7 @@ func main() {
 	flag.IntVar(&cfg.APITimeout, "api-timeout", getEnvOrDefaultInt("API_TIMEOUT", 30), "Timeout for GCP API calls in seconds")
 	flag.BoolVar(&cfg.TLSSkipVerify, "tls-skip-verify", getEnvOrDefaultBool("TLS_SKIP_VERIFY", true), "Skip TLS certificate verification (needed for GCP Memorystore self-signed certs)")
 	flag.BoolVar(&cfg.Verbose, "verbose", getEnvOrDefaultBool("VERBOSE", false), "Enable verbose logging")
+	flag.BoolVar(&cfg.Tracing, "tracing", getEnvOrDefaultBool("TRACING", false), "Enable tracing mode to log all Redis protocol commands")
 	flag.Parse()
 
 	// Set instance type
@@ -41,7 +42,11 @@ func main() {
 	}
 
 	logger.Init(cfg.Verbose)
+	logger.SetTracing(cfg.Tracing)
 	logger.Info(fmt.Sprintf("Starting Cloud Memstore Proxy for %s...", cfg.InstanceType))
+	if cfg.Tracing {
+		logger.Info("Tracing mode enabled - all Redis protocol commands will be logged")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
