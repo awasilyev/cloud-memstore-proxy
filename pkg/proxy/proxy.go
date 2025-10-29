@@ -46,6 +46,7 @@ type Proxy struct {
 	tlsConfig     *tls.Config
 	isClusterMode bool              // True if cluster mode redirect rewriting is enabled
 	nodeMap       map[string]string // Maps remote "ip:port" -> local "ip:port" for cluster redirects
+	tracing       bool              // Enable tracing mode
 	connections   sync.WaitGroup
 	shutdown      chan struct{}
 	shutdownOnce  sync.Once
@@ -136,6 +137,7 @@ func (m *Manager) AddProxy(ctx context.Context, endpoint discovery.Endpoint, loc
 		tlsConfig:     m.tlsConfig,
 		isClusterMode: m.isClusterMode,
 		nodeMap:       m.nodeMap,
+		tracing:       m.config.Tracing,
 		shutdown:      make(chan struct{}),
 	}
 
@@ -455,6 +457,42 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 	logger.Debug(fmt.Sprintf("Connection closed: %s", clientConn.RemoteAddr()))
 }
 
+// copyAndTrace copies data from src to dst while tracing if tracing is enabled
+func (p *Proxy) copyAndTrace(src, dst net.Conn, direction string) error {
+	buf := make([]byte, 32*1024) // 32KB buffer
+	for {
+		nr, err := src.Read(buf)
+		if nr > 0 {
+			data := buf[:nr]
+
+			// Trace the data if tracing is enabled
+			if p.tracing {
+				logger.Trace(direction, data)
+			}
+
+			nw, ew := dst.Write(data)
+			if nw < 0 || nr < nw {
+				nw = 0
+				if ew == nil {
+					ew = fmt.Errorf("invalid write result")
+				}
+			}
+			if ew != nil {
+				return ew
+			}
+			if nr != nw {
+				return fmt.Errorf("short write: %d != %d", nr, nw)
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return err
+			}
+			return err
+		}
+	}
+}
+
 // handleSimpleConnection handles bidirectional traffic without protocol inspection
 // This is used for non-cluster instances.
 func (p *Proxy) handleSimpleConnection(clientConn, remoteConn net.Conn) {
@@ -462,13 +500,13 @@ func (p *Proxy) handleSimpleConnection(clientConn, remoteConn net.Conn) {
 
 	// Client -> Server
 	go func() {
-		_, err := io.Copy(remoteConn, clientConn)
+		err := p.copyAndTrace(clientConn, remoteConn, "CLIENT->SERVER")
 		errChan <- err
 	}()
 
 	// Server -> Client
 	go func() {
-		_, err := io.Copy(clientConn, remoteConn)
+		err := p.copyAndTrace(remoteConn, clientConn, "SERVER->CLIENT")
 		errChan <- err
 	}()
 
@@ -481,16 +519,16 @@ func (p *Proxy) handleSimpleConnection(clientConn, remoteConn net.Conn) {
 func (p *Proxy) handleClusterConnection(clientConn, remoteConn net.Conn) {
 	errChan := make(chan error, 2)
 
-	// Client -> Server: simple copy (no interception needed)
+	// Client -> Server: trace and copy
 	go func() {
-		_, err := io.Copy(remoteConn, clientConn)
-		if err != nil {
+		err := p.copyAndTrace(clientConn, remoteConn, "CLIENT->SERVER")
+		if err != nil && err != io.EOF {
 			logger.Debug(fmt.Sprintf("Client->Server copy error: %v", err))
 		}
 		errChan <- err
 	}()
 
-	// Server -> Client: parse RESP and rewrite redirects
+	// Server -> Client: parse RESP and rewrite redirects, also trace
 	go func() {
 		err := p.proxyServerResponses(remoteConn, clientConn)
 		if err != nil && err != io.EOF {
@@ -529,6 +567,12 @@ func (p *Proxy) proxyServerResponses(serverConn, clientConn net.Conn) error {
 
 		// Serialize and send to client
 		data := value.Serialize()
+
+		// Trace the response if tracing is enabled
+		if p.tracing {
+			logger.Trace("SERVER->CLIENT", data)
+		}
+
 		if _, err := clientConn.Write(data); err != nil {
 			return fmt.Errorf("failed to write to client: %w", err)
 		}
