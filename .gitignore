@@ -35,3 +35,5 @@ go.work
 # Logs
 *.log
 
+scripts
+examples
