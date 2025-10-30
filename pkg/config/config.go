@@ -18,6 +18,7 @@ type Config struct {
 	APITimeout    int // Timeout for GCP API calls in seconds
 	Verbose       bool
 	TLSSkipVerify bool
+	Tracing       bool // Enable tracing mode to log all Redis protocol commands
 }
 
 // NewConfig creates a new configuration with default values
@@ -30,5 +31,6 @@ func NewConfig() *Config {
 		APITimeout:    30, // 30 seconds default for API calls
 		Verbose:       false,
 		TLSSkipVerify: true, // Default to true for GCP Memorystore self-signed certs
+		Tracing:       false,
 	}
 }

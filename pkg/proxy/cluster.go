@@ -12,11 +12,12 @@ import (
 
 // ClusterNode represents a node in the Redis/Valkey cluster
 type ClusterNode struct {
-	ID      string
-	Address string // IP:port format
-	Port    int
-	Flags   string // master, replica, myself, etc.
-	Role    string // master or replica
+	ID             string
+	Address        string // IP:client_port format (e.g., "10.96.0.3:6379")
+	Port           int    // Client port
+	ClusterBusPort int    // Cluster bus port (used by CLUSTER SLOTS)
+	Flags          string // master, replica, myself, etc.
+	Role           string // master or replica
 }
 
 // DiscoverClusterTopology connects to a cluster node and discovers all cluster members
@@ -107,22 +108,39 @@ func parseClusterNodes(output string) ([]ClusterNode, error) {
 		addressField := fields[1]
 		flags := fields[2]
 
-		// Parse address field: "ip:port@cport" or "ip:port@cport,hostname"
-		// We only care about the "ip:port" part
+		logger.Debug(fmt.Sprintf("Raw CLUSTER NODES address field: '%s'", addressField))
+
+		// Parse address field: "ip:cluster_bus_port@client_port" or "ip:cluster_bus_port@client_port,hostname"
+		// Format: cluster_bus_port is for cluster communication (CLUSTER SLOTS), client_port is for client connections
 		address := addressField
+		var clientPort, clusterBusPort int
+
+		// Extract client port (after @) - this is what we use for proxy connections
 		if idx := strings.Index(address, "@"); idx != -1 {
-			address = address[:idx]
+			afterAt := address[idx+1:]
+			// Remove hostname if present (format: "@cport,hostname")
+			if commaIdx := strings.Index(afterAt, ","); commaIdx != -1 {
+				afterAt = afterAt[:commaIdx]
+			}
+			if _, err := fmt.Sscanf(afterAt, "%d", &clientPort); err != nil {
+				logger.Debug(fmt.Sprintf("Failed to parse client port from %s: %v", addressField, err))
+			}
+			address = address[:idx] // Now address is "ip:cluster_bus_port"
+		} else {
+			// If no @, assume the port is the client port (fallback)
+			clientPort = 6379
 		}
+
+		// Remove hostname if present in cluster bus address part
 		if idx := strings.Index(address, ","); idx != -1 {
 			address = address[:idx]
 		}
 
-		// Extract port from address
-		var port int
+		// Extract cluster bus port from address (this is what CLUSTER SLOTS returns)
 		parts := strings.Split(address, ":")
 		if len(parts) == 2 {
-			if _, err := fmt.Sscanf(parts[1], "%d", &port); err != nil {
-				logger.Debug(fmt.Sprintf("Failed to parse port from %s: %v", address, err))
+			if _, err := fmt.Sscanf(parts[1], "%d", &clusterBusPort); err != nil {
+				logger.Debug(fmt.Sprintf("Failed to parse cluster bus port from %s: %v", address, err))
 				continue
 			}
 		}
@@ -133,13 +151,20 @@ func parseClusterNodes(output string) ([]ClusterNode, error) {
 			role = "master"
 		}
 
+		// Create client address for proxy connections
+		clientAddr := fmt.Sprintf("%s:%d", parts[0], clientPort)
+
 		node := ClusterNode{
-			ID:      nodeID,
-			Address: address,
-			Port:    port,
-			Flags:   flags,
-			Role:    role,
+			ID:             nodeID,
+			Address:        clientAddr,
+			Port:           clientPort,
+			ClusterBusPort: clusterBusPort,
+			Flags:          flags,
+			Role:           role,
 		}
+
+		logger.Debug(fmt.Sprintf("Parsed cluster node: ID=%s, Address=%s, Port=%d, ClusterBusPort=%d, Role=%s",
+			node.ID, node.Address, node.Port, node.ClusterBusPort, node.Role))
 
 		nodes = append(nodes, node)
 	}
