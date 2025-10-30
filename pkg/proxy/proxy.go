@@ -21,6 +21,23 @@ const (
 	authResponseBufferSize = 1024 // Buffer size for reading AUTH command responses
 )
 
+// isConnectionClosedError checks if an error is a connection closure error
+// This includes EOF and "use of closed network connection" errors, which are expected
+// when connections are closed normally
+func isConnectionClosedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if err == io.EOF {
+		return true
+	}
+	errStr := err.Error()
+	// Check for various connection closure error messages
+	return strings.Contains(errStr, "use of closed network connection") ||
+		strings.Contains(errStr, "connection reset by peer") ||
+		strings.Contains(errStr, "broken pipe")
+}
+
 // Manager manages multiple proxy instances
 type Manager struct {
 	config            *config.Config
@@ -230,114 +247,161 @@ func (m *Manager) DiscoverAndAddClusterNodes(ctx context.Context, primaryEndpoin
 	logger.Debug(fmt.Sprintf("Enabled cluster mode on %d existing proxy instances", len(m.proxies)))
 	m.mu.Unlock()
 
-	// Create proxies for ALL discovered nodes (including those that might already exist)
-	// This ensures we have local endpoints for all cluster nodes before doing cluster bus port mapping
-	logger.Debug(fmt.Sprintf("Creating proxies for ALL %d discovered nodes", len(nodes)))
-	allEndpoints := make([]discovery.Endpoint, 0, len(nodes))
-	for _, node := range nodes {
-		// Use the external client port (6379) instead of the internal port from CLUSTER NODES
-		// CLUSTER NODES returns internal addresses, but we need external ones for proxy connections
-		externalPort := 6379 // Standard Redis client port
-		endpoint := discovery.Endpoint{
-			Host: extractHost(node.Address),
-			Port: externalPort, // Use external port, not internal port from CLUSTER NODES
-			Type: fmt.Sprintf("cluster-%s", node.Role),
-		}
-		logger.Debug(fmt.Sprintf("Creating endpoint for node %s: %s:%d (external port)", node.ID, endpoint.Host, endpoint.Port))
-		allEndpoints = append(allEndpoints, endpoint)
-	}
+	// Strategy:
+	// 1. Primary endpoint is already mapped to localhost:6379 (or startPort)
+	// 2. For each node discovered via CLUSTER NODES, create a proxy if it doesn't exist
+	// 3. Use sequential local ports (6380, 6381, etc.) for each additional node
+	// 4. Map each node's cluster bus port to its corresponding local proxy address
 
-	// Create proxies for each node (skip if already exists)
-	logger.Debug(fmt.Sprintf("Starting proxy creation loop for %d endpoints", len(allEndpoints)))
-	addedCount := 0
-	for i, endpoint := range allEndpoints {
-		logger.Debug(fmt.Sprintf("=== LOOP ITERATION %d/%d ===", i+1, len(allEndpoints)))
-		logger.Debug(fmt.Sprintf("Processing endpoint %d/%d: %s:%d (%s)", i+1, len(allEndpoints), endpoint.Host, endpoint.Port, endpoint.Type))
-		localPort := startPort + i
-		remoteAddr := fmt.Sprintf("%s:%d", endpoint.Host, endpoint.Port)
-		logger.Debug(fmt.Sprintf("Remote address: %s, local port: %d", remoteAddr, localPort))
+	logger.Debug(fmt.Sprintf("Processing %d discovered nodes for proxy creation and cluster bus port mapping", len(nodes)))
 
-		// Check if this endpoint already has a proxy
-		m.mu.Lock()
-		_, exists := m.nodeMap[remoteAddr]
-		logger.Debug(fmt.Sprintf("Checking if proxy exists for %s: exists=%v, nodeMap keys: %v", remoteAddr, exists, getKeys(m.nodeMap)))
-		m.mu.Unlock()
+	// First, find which nodes need proxies created (skip primary endpoint)
+	primaryRemoteAddr := fmt.Sprintf("%s:%d", primaryEndpoint.Host, primaryEndpoint.Port)
+	primaryLocalAddr := fmt.Sprintf("%s:%d", m.config.LocalAddr, startPort)
 
-		if !exists {
-			logger.Debug(fmt.Sprintf("Creating new proxy for %s", remoteAddr))
-			logger.Debug(fmt.Sprintf("Calling AddProxy with endpoint: %+v, localPort: %d", endpoint, localPort))
-
-			// Check if local port is already in use
-			if m.isPortInUse(localPort) {
-				logger.Error(fmt.Sprintf("Port %d is already in use, skipping proxy creation for %s", localPort, remoteAddr))
-				continue
-			}
-
-			// Add timeout to prevent hanging
-			proxyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			err := m.AddProxy(proxyCtx, endpoint, localPort)
-			cancel()
-
-			if err != nil {
-				logger.Error(fmt.Sprintf("Failed to create proxy for cluster node %s:%d: %v", endpoint.Host, endpoint.Port, err))
-				continue
-			}
-			logger.Info(fmt.Sprintf("Added cluster node proxy: %s:%d -> %s:%d (%s)",
-				m.config.LocalAddr, localPort, endpoint.Host, endpoint.Port, endpoint.Type))
-			addedCount++
-			logger.Debug(fmt.Sprintf("Successfully created proxy %d, continuing to next endpoint", addedCount))
-		} else {
-			logger.Debug(fmt.Sprintf("Proxy already exists for %s", remoteAddr))
-		}
-	}
-	logger.Debug(fmt.Sprintf("Proxy creation loop completed, added %d new proxies", addedCount))
-
-	// Now map ALL discovered nodes (including primary) to their local proxy addresses
-	// This is critical for CLUSTER SLOTS rewriting - CLUSTER SLOTS returns cluster bus ports
-	// Format: "ip:cluster_bus_port" (e.g., "10.96.0.3:11003")
-	logger.Debug(fmt.Sprintf("About to process %d discovered nodes for cluster bus port mapping", len(nodes)))
+	// Verify primary endpoint proxy exists
 	m.mu.Lock()
-	logger.Debug(fmt.Sprintf("Processing %d discovered nodes for cluster bus port mapping", len(nodes)))
-	logger.Debug(fmt.Sprintf("Current nodeMap has %d entries", len(m.nodeMap)))
+	if existingLocalAddr, exists := m.nodeMap[primaryRemoteAddr]; exists {
+		primaryLocalAddr = existingLocalAddr
+		logger.Debug(fmt.Sprintf("Primary endpoint proxy exists: %s -> %s", primaryRemoteAddr, primaryLocalAddr))
+	} else {
+		logger.Debug(fmt.Sprintf("Primary endpoint proxy not found in nodeMap, will create at %s", primaryLocalAddr))
+	}
+	m.mu.Unlock()
+
+	// Create proxies for each discovered node and map their cluster bus ports
+	addedCount := 0
+	currentPort := startPort + 1 // Start from next port after primary (6380, 6381, etc.)
+	nodeIndexToLocalAddr := make(map[int]string)
+
+	// Map primary node first (if we can identify it)
 	for i, node := range nodes {
-		logger.Debug(fmt.Sprintf("Loop iteration %d/%d", i+1, len(nodes)))
-		clientAddr := fmt.Sprintf("%s:%d", extractHost(node.Address), node.Port) // e.g., "10.96.0.3:16379"
-		logger.Debug(fmt.Sprintf("Processing node: %s (client: %s, cluster bus port: %d)", node.ID, clientAddr, node.ClusterBusPort))
-
-		// Find the local proxy address for this node
-		// The nodeMap contains external client addresses (e.g., "10.96.0.3:6379")
-		// but the discovered nodes have internal client addresses (e.g., "10.96.0.3:16379")
-		// We need to map by IP only, not by port
-		var localAddr string
 		nodeIP := extractHost(node.Address)
+		primaryIP := primaryEndpoint.Host
+		if nodeIP == primaryIP {
+			nodeIndexToLocalAddr[i] = primaryLocalAddr
+			logger.Debug(fmt.Sprintf("Mapped primary node %s to primary proxy: %s", node.ID[:8], primaryLocalAddr))
+			break
+		}
+	}
 
-		// Look for a mapping that matches the IP (regardless of port)
-		for remote, local := range m.nodeMap {
-			remoteIP := extractHost(remote)
-			if remoteIP == nodeIP {
-				localAddr = local
-				logger.Debug(fmt.Sprintf("Found mapping by IP: %s -> %s (node: %s)", remote, local, clientAddr))
-				break
+	// Process all nodes to create proxies and map cluster bus ports
+	m.mu.Lock()
+	logger.Debug(fmt.Sprintf("Current nodeMap has %d entries before processing", len(m.nodeMap)))
+	m.mu.Unlock()
+
+	mappedCount := 0
+	for i, node := range nodes {
+		nodeIP := extractHost(node.Address)
+		clientRemoteAddr := fmt.Sprintf("%s:%d", nodeIP, 6379) // Use standard client port 6379
+
+		logger.Debug(fmt.Sprintf("Processing node %d/%d: %s (IP: %s, cluster bus port: %d)",
+			i+1, len(nodes), node.ID[:8], nodeIP, node.ClusterBusPort))
+
+		// Get or create local proxy address for this node
+		// IMPORTANT: Create a separate proxy for EACH node, even if they share the same IP,
+		// because each node has a unique cluster bus port that CLUSTER SLOTS will return
+		var localAddr string
+
+		// Check if this is the primary endpoint node
+		if nodeIP == primaryEndpoint.Host {
+			// Use primary proxy for primary endpoint node
+			localAddr = primaryLocalAddr
+			m.mu.Lock()
+			m.nodeMap[clientRemoteAddr] = localAddr
+			nodeIndexToLocalAddr[i] = localAddr
+			m.mu.Unlock()
+			logger.Debug(fmt.Sprintf("Using primary proxy for node %s: %s -> %s", node.ID[:8], clientRemoteAddr, localAddr))
+		} else {
+			// For non-primary nodes, check if we already created a proxy for this specific node
+			// Use cluster bus port as part of the key to ensure each node gets its own proxy
+			clusterBusKey := fmt.Sprintf("%s:bus:%d", nodeIP, node.ClusterBusPort)
+
+			m.mu.Lock()
+			if existingLocalAddr, exists := m.nodeMap[clusterBusKey]; exists {
+				// Proxy already exists for this specific node (identified by cluster bus port)
+				localAddr = existingLocalAddr
+				nodeIndexToLocalAddr[i] = localAddr
+				m.mu.Unlock()
+				logger.Debug(fmt.Sprintf("Node %s proxy already exists (via cluster bus key): %s -> %s",
+					node.ID[:8], clusterBusKey, localAddr))
+			} else {
+				// Create a new proxy for this specific node
+				localPort := currentPort
+				currentPort++
+				m.mu.Unlock()
+
+				// Check if local port is already in use
+				if m.isPortInUse(localPort) {
+					logger.Error(fmt.Sprintf("Port %d is already in use, skipping proxy creation for node %s", localPort, node.ID[:8]))
+					continue
+				}
+
+				localAddr = fmt.Sprintf("%s:%d", m.config.LocalAddr, localPort)
+
+				// For cluster nodes, connect via their cluster bus port
+				// In GCP Memorystore clusters, each node is accessible via its unique cluster bus port
+				remotePort := node.ClusterBusPort
+				if remotePort == 0 {
+					// Fallback to client port if cluster bus port is not available
+					remotePort = node.Port
+					if remotePort == 0 {
+						remotePort = 6379 // Final fallback
+					}
+					logger.Debug(fmt.Sprintf("Node %s has no cluster bus port, using client port %d", node.ID[:8], remotePort))
+				}
+
+				endpoint := discovery.Endpoint{
+					Host: nodeIP,
+					Port: remotePort,
+					Type: fmt.Sprintf("cluster-%s", node.Role),
+				}
+
+				actualRemoteAddr := fmt.Sprintf("%s:%d", nodeIP, remotePort)
+				logger.Debug(fmt.Sprintf("Creating proxy for node %s: %s -> %s (cluster bus port: %d)",
+					node.ID[:8], actualRemoteAddr, localAddr, node.ClusterBusPort))
+
+				// Create the proxy
+				proxyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				err := m.AddProxy(proxyCtx, endpoint, localPort)
+				cancel()
+
+				if err != nil {
+					logger.Error(fmt.Sprintf("Failed to create proxy for node %s (%s:%d): %v", node.ID[:8], nodeIP, remotePort, err))
+					continue
+				}
+
+				m.mu.Lock()
+				// Map both client address and cluster bus key to this proxy
+				m.nodeMap[clientRemoteAddr] = localAddr
+				m.nodeMap[clusterBusKey] = localAddr
+				nodeIndexToLocalAddr[i] = localAddr
+				m.mu.Unlock()
+
+				logger.Info(fmt.Sprintf("Created proxy for node %s: %s -> %s (%s)",
+					node.ID[:8], clientRemoteAddr, localAddr, node.Role))
+				addedCount++
 			}
 		}
 
-		if localAddr == "" {
-			logger.Debug(fmt.Sprintf("No local address found for node %s (client: %s)", node.ID, clientAddr))
-		}
-
-		if node.ClusterBusPort == 0 {
-			logger.Debug(fmt.Sprintf("Node %s has no cluster bus port", node.ID))
-		}
-
+		// Map cluster bus port to this node's local proxy address
 		if localAddr != "" && node.ClusterBusPort > 0 {
-			// Map the cluster bus port address (what CLUSTER SLOTS returns) to local proxy
-			clusterBusAddr := fmt.Sprintf("%s:%d", extractHost(node.Address), node.ClusterBusPort)
+			m.mu.Lock()
+			clusterBusAddr := net.JoinHostPort(nodeIP, fmt.Sprintf("%d", node.ClusterBusPort))
 			m.nodeMap[clusterBusAddr] = localAddr
-			logger.Debug(fmt.Sprintf("✓ Mapped cluster bus address %s -> %s (client: %s)", clusterBusAddr, localAddr, clientAddr))
+			m.mu.Unlock()
+			mappedCount++
+			logger.Debug(fmt.Sprintf("✓ Mapped cluster bus address %s -> %s (node: %s)",
+				clusterBusAddr, localAddr, node.ID[:8]))
 		} else {
-			logger.Debug(fmt.Sprintf("✗ Skipped mapping for node %s: localAddr=%s, clusterBusPort=%d", node.ID, localAddr, node.ClusterBusPort))
+			if node.ClusterBusPort == 0 {
+				logger.Debug(fmt.Sprintf("Node %s has no cluster bus port, skipping mapping", node.ID[:8]))
+			}
 		}
 	}
+
+	m.mu.Lock()
+	logger.Info(fmt.Sprintf("Created %d additional proxies, mapped %d cluster bus port addresses", addedCount, mappedCount))
 	logger.Debug(fmt.Sprintf("Final nodeMap has %d entries: %v", len(m.nodeMap), getKeys(m.nodeMap)))
 	m.mu.Unlock()
 
@@ -485,7 +549,7 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 			logger.Error(fmt.Sprintf("Failed to establish TLS connection to remote: %v", err))
 			return
 		}
-		logger.Debug("TLS handshake completed successfully")
+		logger.Debug(fmt.Sprintf("TLS handshake completed successfully, local=%s remote=%s", remoteConn.LocalAddr(), remoteConn.RemoteAddr()))
 	} else {
 		// Plain TCP connection
 		remoteConn, err = net.DialTimeout("tcp", p.remoteAddr, 5*time.Second)
@@ -493,6 +557,7 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 			logger.Error(fmt.Sprintf("Failed to connect to remote: %v", err))
 			return
 		}
+		logger.Debug(fmt.Sprintf("Connected to remote, local=%s remote=%s", remoteConn.LocalAddr(), remoteConn.RemoteAddr()))
 	}
 	defer remoteConn.Close()
 
@@ -583,8 +648,9 @@ func (p *Proxy) copyAndTrace(src, dst net.Conn, inputLabel, outputLabel string) 
 			}
 		}
 		if err != nil {
-			if err == io.EOF {
-				return err
+			// Treat connection closure errors as EOF for consistency
+			if isConnectionClosedError(err) {
+				return io.EOF
 			}
 			return err
 		}
@@ -620,7 +686,8 @@ func (p *Proxy) handleClusterConnection(clientConn, remoteConn net.Conn) {
 	// Client -> Proxy -> Server: trace and copy
 	go func() {
 		err := p.copyAndTrace(clientConn, remoteConn, "CLIENT->PROXY", "PROXY->SERVER")
-		if err != nil && err != io.EOF {
+		// Only log non-connection-closure errors (parse errors, etc.)
+		if err != nil && !isConnectionClosedError(err) {
 			logger.Debug(fmt.Sprintf("Client->Server copy error: %v", err))
 		}
 		errChan <- err
@@ -629,7 +696,8 @@ func (p *Proxy) handleClusterConnection(clientConn, remoteConn net.Conn) {
 	// Server -> Proxy -> Client: parse RESP and rewrite redirects, also trace
 	go func() {
 		err := p.proxyServerResponses(remoteConn, clientConn)
-		if err != nil && err != io.EOF {
+		// Only log non-connection-closure errors (parse errors, etc.)
+		if err != nil && !isConnectionClosedError(err) {
 			logger.Debug(fmt.Sprintf("Server->Client proxy error: %v", err))
 		}
 		errChan <- err
@@ -647,10 +715,11 @@ func (p *Proxy) proxyServerResponses(serverConn, clientConn net.Conn) error {
 		// Read a RESP value from the server
 		value, err := respReader.ReadValue()
 		if err != nil {
-			if err == io.EOF {
-				return err
+			// Treat connection closure errors (EOF, closed connection, etc.) as expected
+			if isConnectionClosedError(err) {
+				return io.EOF
 			}
-			// If not EOF, it might be a parse error or connection issue
+			// If not a connection closure error, it might be a parse error
 			return fmt.Errorf("failed to read RESP value: %w", err)
 		}
 

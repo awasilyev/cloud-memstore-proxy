@@ -81,36 +81,38 @@ func (d *GCPDiscoverer) DiscoverInstance(ctx context.Context, instanceName strin
 	info.RequiresTLS = instance.TransitEncryptionMode == "SERVER_AUTHENTICATION"
 
 	// Parse endpoints from the new structure
+	// IMPORTANT: Only return the primary endpoint initially.
+	// Additional nodes will be discovered via CLUSTER NODES command if in cluster mode.
 	if len(instance.Endpoints) > 0 && len(instance.Endpoints[0].Connections) > 0 {
-		for i, conn := range instance.Endpoints[0].Connections {
+		// Find the primary endpoint (prefer CONNECTION_TYPE_DISCOVERY, otherwise use first)
+		var primaryConn *PscAutoConnection
+		for _, conn := range instance.Endpoints[0].Connections {
 			psc := conn.PscAutoConnection
 			if psc.IPAddress != "" {
-				epType := "primary"
-				// CONNECTION_TYPE_DISCOVERY is for read-write
 				if psc.ConnectionType == "CONNECTION_TYPE_DISCOVERY" {
-					epType = "primary"
-				} else if i > 0 {
-					epType = fmt.Sprintf("endpoint-%d", i)
+					primaryConn = &psc
+					break
+				} else if primaryConn == nil {
+					primaryConn = &psc
 				}
-
-				info.Endpoints = append(info.Endpoints, Endpoint{
-					Host: psc.IPAddress,
-					Port: psc.Port,
-					Type: epType,
-				})
 			}
 		}
+
+		if primaryConn != nil {
+			info.Endpoints = append(info.Endpoints, Endpoint{
+				Host: primaryConn.IPAddress,
+				Port: primaryConn.Port,
+				Type: "primary",
+			})
+		}
 	} else if len(instance.DiscoveryEndpoints) > 0 {
-		// Fallback to discoveryEndpoints if available
-		for i, ep := range instance.DiscoveryEndpoints {
-			epType := "primary"
-			if i > 0 {
-				epType = fmt.Sprintf("endpoint-%d", i)
-			}
+		// Fallback to discoveryEndpoints if available - only return first (primary)
+		if len(instance.DiscoveryEndpoints) > 0 {
+			ep := instance.DiscoveryEndpoints[0]
 			info.Endpoints = append(info.Endpoints, Endpoint{
 				Host: ep.Address,
 				Port: ep.Port,
-				Type: epType,
+				Type: "primary",
 			})
 		}
 	} else if instance.Host != "" {
@@ -120,15 +122,6 @@ func (d *GCPDiscoverer) DiscoverInstance(ctx context.Context, instanceName strin
 			Port: instance.Port,
 			Type: "primary",
 		})
-
-		// Add read endpoint if available (for read replicas)
-		if instance.ReadEndpoint != "" && instance.ReadEndpointPort > 0 {
-			info.Endpoints = append(info.Endpoints, Endpoint{
-				Host: instance.ReadEndpoint,
-				Port: instance.ReadEndpointPort,
-				Type: "read-replica",
-			})
-		}
 	}
 
 	// If TLS is required, get CA certificate
