@@ -15,8 +15,12 @@ RUN go mod download
 # Copy source code
 COPY . .
 
+# TARGETOS/TARGETARCH are set by BuildKit (docker buildx / multi-platform)
+ARG TARGETOS
+ARG TARGETARCH
+
 # Build the binary with optimizations for size and performance
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags='-w -s -extldflags "-static"' \
     -a \
     -o cloud-memstore-proxy \
