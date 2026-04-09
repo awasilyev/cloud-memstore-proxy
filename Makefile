@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker-build docker-run fmt lint setup-hooks
+.PHONY: build run test clean docker-build docker-build-multi docker-run fmt lint setup-hooks
 
 BINARY_NAME=cloud-memstore-proxy
 DOCKER_IMAGE=ghcr.io/awasilyev/cloud-memstore-proxy
@@ -62,9 +62,13 @@ clean:
 	rm -f $(BINARY_NAME)
 	rm -f coverage.out
 
-# Build Docker image
+# Build Docker image for the default platform (uses TARGETARCH from BuildKit)
 docker-build:
 	docker build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+
+# Build and push multi-arch image (linux/amd64, linux/arm64); requires registry login
+docker-build-multi:
+	docker buildx build --platform linux/amd64,linux/arm64 -t $(DOCKER_IMAGE):$(DOCKER_TAG) --push .
 
 # Run Docker container (requires environment variables)
 docker-run:
