@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Client AUTH command interception**: Proxy now accepts and ignores any AUTH commands sent by clients, responding with +OK without forwarding to the server. This allows clients to send AUTH commands with any password without affecting the proxy's own authentication to the Redis/Valkey instance.
 - **Multi-instance support**: Works with both Valkey and Redis instances
 - **Memorystore for Valkey** support:
   - REST API-based discovery (no SDK dependency)

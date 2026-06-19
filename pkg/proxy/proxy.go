@@ -657,14 +657,76 @@ func (p *Proxy) copyAndTrace(src, dst net.Conn, inputLabel, outputLabel string) 
 	}
 }
 
+// proxyClientCommands handles client-to-server forwarding with AUTH command interception
+// Intercepts AUTH commands from clients and responds with +OK without forwarding to server
+func (p *Proxy) proxyClientCommands(clientConn, serverConn net.Conn) error {
+	respReader := NewRESPReader(clientConn)
+
+	for {
+		// Read a RESP command from the client
+		value, err := respReader.ReadValue()
+		if err != nil {
+			// Treat connection closure errors as EOF for consistency
+			if isConnectionClosedError(err) {
+				return io.EOF
+			}
+			return fmt.Errorf("failed to read RESP command from client: %w", err)
+		}
+
+		// Trace the command received from client
+		if p.tracing {
+			rawData := value.Serialize()
+			logger.Trace("CLIENT->PROXY", rawData)
+		}
+
+		// Check if this is an AUTH command
+		// AUTH commands are arrays: *2\r\n$4\r\nAUTH\r\n$<len>\r\n<password>\r\n
+		if value.Type == Array && len(value.Array) >= 2 {
+			// Check if first element is "AUTH" (case-insensitive)
+			cmdName := ""
+			switch value.Array[0].Type {
+			case BulkString, SimpleString:
+				cmdName = strings.ToUpper(value.Array[0].Str)
+			}
+
+			if cmdName == "AUTH" {
+				// Intercept AUTH command: respond with +OK to client, don't forward to server
+				logger.Debug("Intercepted AUTH command from client, responding with +OK")
+				authResponse := []byte("+OK\r\n")
+				if p.tracing {
+					logger.Trace("PROXY->CLIENT", authResponse)
+				}
+				if _, err := clientConn.Write(authResponse); err != nil {
+					return fmt.Errorf("failed to send AUTH response to client: %w", err)
+				}
+				// Continue to next command without forwarding AUTH to server
+				continue
+			}
+		}
+
+		// For all other commands, forward to server
+		data := value.Serialize()
+		if p.tracing {
+			logger.Trace("PROXY->SERVER", data)
+		}
+		if _, err := serverConn.Write(data); err != nil {
+			return fmt.Errorf("failed to forward command to server: %w", err)
+		}
+	}
+}
+
 // handleSimpleConnection handles bidirectional traffic without protocol inspection
 // This is used for non-cluster instances.
 func (p *Proxy) handleSimpleConnection(clientConn, remoteConn net.Conn) {
 	errChan := make(chan error, 2)
 
-	// Client -> Proxy -> Server
+	// Client -> Proxy -> Server: intercept AUTH commands
 	go func() {
-		err := p.copyAndTrace(clientConn, remoteConn, "CLIENT->PROXY", "PROXY->SERVER")
+		err := p.proxyClientCommands(clientConn, remoteConn)
+		// Only log non-connection-closure errors
+		if err != nil && !isConnectionClosedError(err) {
+			logger.Debug(fmt.Sprintf("Client->Server proxy error: %v", err))
+		}
 		errChan <- err
 	}()
 
@@ -683,12 +745,12 @@ func (p *Proxy) handleSimpleConnection(clientConn, remoteConn net.Conn) {
 func (p *Proxy) handleClusterConnection(clientConn, remoteConn net.Conn) {
 	errChan := make(chan error, 2)
 
-	// Client -> Proxy -> Server: trace and copy
+	// Client -> Proxy -> Server: intercept AUTH commands and forward others
 	go func() {
-		err := p.copyAndTrace(clientConn, remoteConn, "CLIENT->PROXY", "PROXY->SERVER")
+		err := p.proxyClientCommands(clientConn, remoteConn)
 		// Only log non-connection-closure errors (parse errors, etc.)
 		if err != nil && !isConnectionClosedError(err) {
-			logger.Debug(fmt.Sprintf("Client->Server copy error: %v", err))
+			logger.Debug(fmt.Sprintf("Client->Server proxy error: %v", err))
 		}
 		errChan <- err
 	}()
