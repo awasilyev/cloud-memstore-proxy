@@ -842,6 +842,17 @@ func (p *Proxy) proxyServerResponses(serverConn, clientConn net.Conn) error {
 			}
 		}
 
+		// Check if this is a CLUSTER NODES response (a bulk string) and rewrite
+		// node addresses so clients route through the proxy instead of connecting
+		// directly to backend nodes. Clients like RedisShake discover topology via
+		// CLUSTER NODES rather than CLUSTER SLOTS, so this rewrite is required for
+		// them to stay behind the proxy's TLS/IAM termination.
+		if value.Type == BulkString && !value.Null {
+			if value.RewriteClusterNodes(p.nodeMap) {
+				logger.Debug(fmt.Sprintf("✓ Rewrote CLUSTER NODES response addresses (nodeMap has %d entries)", len(p.nodeMap)))
+			}
+		}
+
 		// Serialize and send to client
 		data := value.Serialize()
 

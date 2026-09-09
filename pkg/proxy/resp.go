@@ -344,6 +344,108 @@ func rewriteClusterSlotsArray(arr *[]RESPValue, nodeMap map[string]string) bool 
 	return changed
 }
 
+// looksLikeClusterNodesReply reports whether s begins with a 40-character
+// Redis cluster node ID (hex) followed by a space. CLUSTER NODES lines always
+// start this way, so this is a cheap O(40), allocation-free guard that lets us
+// skip ordinary bulk-string replies (GET values, DUMP payloads, etc.) without
+// splitting them into lines/fields.
+func looksLikeClusterNodesReply(s string) bool {
+	if len(s) < 41 {
+		return false
+	}
+	for i := 0; i < 40; i++ {
+		c := s[i]
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return false
+		}
+	}
+	return s[40] == ' '
+}
+
+// splitNodeAddress splits a CLUSTER NODES address token of the form
+// "ip:port@cport[,hostname]" into the client address ("ip:port") and the bus
+// port ("cport", with any advertised hostname stripped). If there is no '@',
+// the whole token is treated as the client address and busPort is empty.
+func splitNodeAddress(token string) (clientAddr, busPort string) {
+	at := strings.Index(token, "@")
+	if at == -1 {
+		return token, ""
+	}
+	clientAddr = token[:at]
+	busPort = token[at+1:]
+	if comma := strings.Index(busPort, ","); comma != -1 {
+		busPort = busPort[:comma]
+	}
+	return clientAddr, busPort
+}
+
+// RewriteClusterNodes rewrites the bulk-string reply of the CLUSTER NODES
+// command so each node's client address points at its local proxy listener
+// instead of the backend cluster node.
+//
+// Reply format (one node per line, lines are \n-terminated):
+//
+//	<id> <ip:port@cport[,hostname]> <flags> <master> <ping> <pong> <epoch> <link-state> [slot ...]
+//
+// The address token before '@' is the client ip:port that clients connect to;
+// that is what we look up in nodeMap and replace. The bus port after '@' is
+// cluster-internal and preserved; any advertised hostname is dropped so the
+// client cannot resolve a route that bypasses the proxy.
+//
+// This is required for clients such as RedisShake that discover cluster
+// topology via CLUSTER NODES (not CLUSTER SLOTS): without it they would connect
+// directly to backend nodes and bypass the proxy's TLS/IAM termination.
+func (v *RESPValue) RewriteClusterNodes(nodeMap map[string]string) bool {
+	if v.Type != BulkString || v.Null {
+		return false
+	}
+	if !looksLikeClusterNodesReply(v.Str) {
+		return false
+	}
+
+	// Preserve the exact line structure (including the trailing empty element
+	// produced by the final \n) so the reply is byte-faithful except for the
+	// addresses we intentionally rewrite.
+	lines := strings.Split(v.Str, "\n")
+	changed := false
+
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		clientAddr, busPort := splitNodeAddress(fields[1])
+		localAddr, found := nodeMap[clientAddr]
+		if !found {
+			logger.Debug(fmt.Sprintf("✗ CLUSTER NODES address not in nodeMap: %s (map has %d entries)", clientAddr, len(nodeMap)))
+			continue
+		}
+
+		newAddr := localAddr
+		if busPort != "" {
+			newAddr = localAddr + "@" + busPort
+		}
+		fields[1] = newAddr
+
+		// CLUSTER NODES uses single-space field separators, so re-joining with a
+		// single space reproduces the line faithfully.
+		lines[i] = strings.Join(fields, " ")
+		changed = true
+		logger.Debug(fmt.Sprintf("✓ Rewrote CLUSTER NODES node address: %s -> %s", clientAddr, localAddr))
+	}
+
+	if changed {
+		v.Str = strings.Join(lines, "\n")
+	}
+	return changed
+}
+
 // getKeys returns a slice of all keys from a map (for debugging)
 func getKeys(m map[string]string) []string {
 	keys := make([]string, 0, len(m))
