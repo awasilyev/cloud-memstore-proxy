@@ -1,0 +1,55 @@
+# Local development / CI-parity environment.
+#
+# The `code` service is the same toolchain image CI uses, so `lint`, `test` and
+# builds behave identically to CircleCI. The `proxy` service builds the shippable
+# image from the repo Dockerfile — the same one CI publishes.
+#
+# Pulling/building requires auth to OneSignal's Artifact Registry:
+#   gcloud auth configure-docker europe-west4-docker.pkg.dev
+#
+# Usage:
+#   docker compose run --rm code ./script/test
+#   docker compose run --rm code ./script/lint
+#   docker compose build proxy
+services:
+  # Interactive CI-parity container. Runs nothing by default; exec commands into
+  # it (tests, lint, go build) against the same image and caches as CI.
+  code:
+    image: europe-west4-docker.pkg.dev/core-infra-onesignal/development/golang-ci:1.26.2
+    tty: true
+    working_dir: /code
+    environment:
+      - GOCACHE=/go/cache
+      - GOMODCACHE=/go/pkg/mod
+      - GOMAXPROCS=3
+    volumes:
+      - ./:/code
+      - go-cache:/go/cache
+      - go-mod:/go/pkg/mod
+
+  # Builds the production image locally (identical to what CI publishes).
+  # Running it needs GCP credentials and a reachable Memorystore instance; the
+  # final image is `scratch`, so credentials must be supplied as a mounted key
+  # file via GOOGLE_APPLICATION_CREDENTIALS (ADC's well-known file path is not
+  # available without a home dir).
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cloud-memstore-proxy:local
+    # Uncomment and fill in to actually run the proxy locally:
+    # environment:
+    #   - INSTANCE_TYPE=valkey
+    #   - INSTANCE_NAME=projects/PROJECT_ID/locations/REGION/instances/TARGET_VALKEY
+    #   - START_PORT=6379
+    #   - GOOGLE_APPLICATION_CREDENTIALS=/credentials/key.json
+    # volumes:
+    #   - ${GOOGLE_APPLICATION_CREDENTIALS:-./key.json}:/credentials/key.json:ro
+    # ports:
+    #   - "6379:6379"
+    #   - "8080:8080"
+
+# Named volumes persisted across rebuilds. Remove with `docker compose down -v`.
+volumes:
+  go-cache:
+  go-mod:

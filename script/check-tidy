@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+#
+# Purpose: fail if go.mod / go.sum are not tidy. Restores the originals so a
+# CI working tree is never left mutated.
+
+set -euo pipefail
+[ -z "${DEBUG:-}" ] || set -x
+
+cd "$(dirname "$0")/.."
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+cp go.mod go.sum "$tmp/"
+
+go mod tidy
+
+if ! diff -q go.mod "$tmp/go.mod" >/dev/null || ! diff -q go.sum "$tmp/go.sum" >/dev/null; then
+  echo "go.mod/go.sum are not tidy. Run 'go mod tidy' and commit the result." >&2
+  cp "$tmp/go.mod" go.mod
+  cp "$tmp/go.sum" go.sum
+  exit 1
+fi
+
+echo "go.mod/go.sum are tidy."

@@ -1,0 +1,93 @@
+version: 2.1
+
+# Uses OneSignal's shared infra orb for building and pushing the image to
+# Artifact Registry. See https://github.com/OneSignal/infra-circle-orb/releases
+# for the latest version.
+orbs:
+  infra: onesignal/infra-circle-orb@2.0.0
+
+# CI toolchain image (Go + golangci-lint), pulled from OneSignal's dev registry.
+# Requires the `gcp-docker-auth` context for the $DOCKER_LOGIN/$DOCKER_PASSWORD
+# credentials.
+golang_image: &golang_image
+  - image: europe-west4-docker.pkg.dev/core-infra-onesignal/development/golang-ci:1.26.2
+    auth:
+      username: $DOCKER_LOGIN
+      password: $DOCKER_PASSWORD
+    environment:
+      # CircleCI medium containers expose 3 CPUs; pin GOMAXPROCS so the race
+      # detector and test scheduler don't over-subscribe the host.
+      GOMAXPROCS: "3"
+      GOCACHE: /go/cache
+      GOMODCACHE: /go/pkg/mod
+
+go_cache: &go_cache
+  keys:
+    - v1-go-{{ checksum "go.sum" }}
+    - v1-go-
+
+jobs:
+  lint:
+    docker: *golang_image
+    resource_class: medium
+    steps:
+      - checkout
+      - restore_cache: *go_cache
+      - run: ./script/check-tidy
+      - run: ./script/lint
+
+  test:
+    docker: *golang_image
+    resource_class: medium
+    steps:
+      - checkout
+      - restore_cache: *go_cache
+      - run: ./script/test
+      - save_cache:
+          key: v1-go-{{ checksum "go.sum" }}
+          paths:
+            - /go/cache
+            - /go/pkg/mod
+
+workflows:
+  version: 2
+  build:
+    jobs:
+      - lint:
+          context: gcp-docker-auth
+      - test:
+          context: gcp-docker-auth
+
+      # Build one image per architecture and push each with an arch-tagged
+      # name, then stitch them into a single multi-arch manifest. The published
+      # manifest lands at
+      # europe-west4-docker.pkg.dev/core-infra-onesignal/onesignal/cloud-memstore-proxy
+      # tagged with the git SHA and branch. Only runs once lint + test pass.
+      - infra/build-push:
+          name: build-push-x64
+          context: gke-production
+          image: cloud-memstore-proxy
+          dockerfile: Dockerfile
+          multi_arch: true
+          resource_class: medium
+          requires:
+            - lint
+            - test
+
+      - infra/build-push:
+          name: build-push-arm64
+          context: gke-production
+          image: cloud-memstore-proxy
+          dockerfile: Dockerfile
+          multi_arch: true
+          resource_class: arm.medium
+          requires:
+            - lint
+            - test
+
+      - infra/create-manifest:
+          context: gke-production
+          image: cloud-memstore-proxy
+          requires:
+            - build-push-x64
+            - build-push-arm64

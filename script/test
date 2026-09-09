@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#
+# Purpose: run the test suite with the race detector (same command CI runs).
+
+set -euo pipefail
+[ -z "${DEBUG:-}" ] || set -x
+
+cd "$(dirname "$0")/.."
+
+go test -race ./...

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#
+# Purpose: run the linter over the codebase (same command CI runs).
+
+set -euo pipefail
+[ -z "${DEBUG:-}" ] || set -x
+
+cd "$(dirname "$0")/.."
+
+golangci-lint run ./... --timeout 3m
