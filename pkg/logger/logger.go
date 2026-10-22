@@ -101,7 +101,7 @@ func escapeBytes(data []byte) string {
 		} else if b == '\\' {
 			buf.WriteString("\\\\")
 		} else {
-			buf.WriteString(fmt.Sprintf("\\x%02x", b))
+			fmt.Fprintf(&buf, "\\x%02x", b)
 		}
 	}
 	return buf.String()
