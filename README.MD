@@ -369,7 +369,7 @@ const client = redis.createClient({
 
 ### TLS Handshake Failed
 - Ensure the instance has transit encryption properly configured
-- Verify the CA certificate was retrieved successfully (enable verbose logging); the identity needs `memorystore.instances.getCertificateAuthority`
+- Verify the CA certificate was retrieved successfully (enable verbose logging); the identity needs `memorystore.instances.get` (also covers the certificateAuthority API)
 - `x509: certificate signed by unknown authority`: the CA retrieved does not match the server certificate
 - `x509: cannot validate certificate for <ip>`: the instance does not use a per-instance CA and the endpoint IP is not in the server certificate
 - Check for clock skew between your system and GCP
@@ -389,8 +389,7 @@ const client = redis.createClient({
 - Go 1.25 or later (for building)
 - Docker (for containerization)
 - GCP IAM credentials with appropriate permissions:
-  - `memorystore.instances.get`
-  - `memorystore.instances.getCertificateAuthority` (for TLS)
+  - `memorystore.instances.get` (instance discovery and, for TLS, the server CA)
 - Access to GCP Memorystore for Valkey
 
 ## API References

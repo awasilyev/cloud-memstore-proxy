@@ -96,7 +96,7 @@ func (m *Manager) SetTLSConfig(caCert string, perInstanceCA, skipVerify bool) er
 	}
 
 	if caCert == "" {
-		return fmt.Errorf("no server CA certificate available to verify the instance; check memorystore.instances.getCertificateAuthority permission, or set -tls-skip-verify to connect without verification")
+		return fmt.Errorf("no server CA certificate available to verify the instance; check memorystore.instances.get permission, or set -tls-skip-verify to connect without verification")
 	}
 
 	caCertPool := x509.NewCertPool()
