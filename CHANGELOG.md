@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **TLS certificate verification is now enabled by default** (`-tls-skip-verify` / `TLS_SKIP_VERIFY` default changed from `true` to `false`). Previously any server certificate was accepted, even when the instance CA was loaded.
+- Only the instance CA is trusted (never the system roots). The server certificate chain is always verified; with a per-instance CA the chain identifies the instance, otherwise the endpoint IP must be in the server certificate's SANs. Verification runs via `VerifyConnection`, so resumed TLS sessions are checked too.
+- The proxy refuses to start when TLS is required but no CA could be retrieved, instead of silently falling back to the system roots.
+
+### Fixed
+- Valkey CA retrieval used a non-existent endpoint (`POST {instance}:getCertificateAuthority`, HTTP 404). It now uses `GET {instance}/certificateAuthority` and parses `managedServerCa.caCerts[].certificates[]`.
+- All CA certificates are trusted (intermediates, roots, and every `serverCaCerts` entry for Redis), not only the first, so CA rotation keeps working.
+
 ### Added
 - **Client AUTH command interception**: Proxy now accepts and ignores any AUTH commands sent by clients, responding with +OK without forwarding to the server. This allows clients to send AUTH commands with any password without affecting the proxy's own authentication to the Redis/Valkey instance.
 - **Multi-instance support**: Works with both Valkey and Redis instances

@@ -14,18 +14,16 @@ import (
 
 // RedisInstance represents a Memorystore for Redis instance from REST API
 type RedisInstance struct {
-	Name                  string `json:"name"`
-	Host                  string `json:"host"`
-	Port                  int    `json:"port"`
-	ReadReplicasMode      string `json:"readReplicasMode,omitempty"`
-	ReadEndpoint          string `json:"readEndpoint,omitempty"`
-	ReadEndpointPort      int    `json:"readEndpointPort,omitempty"`
-	AuthEnabled           bool   `json:"authEnabled"`
-	TransitEncryptionMode string `json:"transitEncryptionMode"`
-	ServerCaCerts         []struct {
-		Cert string `json:"cert"`
-	} `json:"serverCaCerts,omitempty"`
-	CurrentLocationID string `json:"currentLocationId,omitempty"`
+	Name                  string     `json:"name"`
+	Host                  string     `json:"host"`
+	Port                  int        `json:"port"`
+	ReadReplicasMode      string     `json:"readReplicasMode,omitempty"`
+	ReadEndpoint          string     `json:"readEndpoint,omitempty"`
+	ReadEndpointPort      int        `json:"readEndpointPort,omitempty"`
+	AuthEnabled           bool       `json:"authEnabled"`
+	TransitEncryptionMode string     `json:"transitEncryptionMode"`
+	ServerCaCerts         []CertInfo `json:"serverCaCerts,omitempty"`
+	CurrentLocationID     string     `json:"currentLocationId,omitempty"`
 }
 
 // DiscoverRedisInstance discovers a Memorystore for Redis instance
@@ -78,8 +76,10 @@ func (d *GCPDiscoverer) DiscoverRedisInstance(ctx context.Context, instanceName 
 
 	// Get CA certificate if TLS is enabled
 	if info.RequiresTLS {
+		// Memorystore for Redis instances have their own CAs; clients must trust all of them (rotation)
+		info.PerInstanceCA = true
 		if len(instance.ServerCaCerts) > 0 {
-			info.CACertificate = instance.ServerCaCerts[0].Cert
+			info.CACertificate = joinCerts(instance.ServerCaCerts)
 		}
 	}
 

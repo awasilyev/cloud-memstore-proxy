@@ -46,6 +46,8 @@ type Manager struct {
 	authPassword      string // For Redis password auth
 	authorizationMode string // From discovery: IAM_AUTH, PASSWORD_AUTH, AUTH_DISABLED
 	tlsConfig         *tls.Config
+	caPool            *x509.CertPool    // Instance CA certificates, nil when TLS verification is disabled
+	perInstanceCA     bool              // CA is unique to the instance: chain verification identifies it
 	nodeMap           map[string]string // Maps remote "ip:port" -> local "ip:port" for cluster redirects
 	isClusterMode     bool              // True if cluster mode is detected
 	mu                sync.Mutex
@@ -78,37 +80,80 @@ func NewManager(cfg *config.Config) *Manager {
 	}
 }
 
-// SetTLSConfig sets the TLS configuration for all proxies
-func (m *Manager) SetTLSConfig(caCert string, skipVerify bool) error {
-	if caCert != "" {
-		// Create a certificate pool with the CA certificate
-		caCertPool := x509.NewCertPool()
-		if !caCertPool.AppendCertsFromPEM([]byte(caCert)) {
-			return fmt.Errorf("failed to parse CA certificate")
-		}
-
-		m.tlsConfig = &tls.Config{
-			RootCAs:            caCertPool,
-			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: skipVerify,
-		}
-
-		logger.Info("TLS configuration initialized with instance CA certificate")
-	} else {
-		// No CA cert provided
+// SetTLSConfig sets the TLS configuration for all proxies.
+//
+// Unless skipVerify is set, only the instance CA certificates in caCert are trusted (never the system
+// roots) and the server certificate chain must verify against them. With a per-instance CA the chain
+// identifies the instance; otherwise the endpoint IP must also be in the server certificate's SANs.
+func (m *Manager) SetTLSConfig(caCert string, perInstanceCA, skipVerify bool) error {
+	if skipVerify {
 		m.tlsConfig = &tls.Config{
 			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: skipVerify,
+			InsecureSkipVerify: true, //nolint:gosec // explicitly requested with -tls-skip-verify
 		}
-
-		if skipVerify {
-			logger.Info("TLS configuration initialized (certificate verification disabled)")
-		} else {
-			logger.Info("TLS configuration initialized with system CA certificates")
-		}
+		logger.Info("WARNING: TLS certificate verification disabled (-tls-skip-verify)")
+		return nil
 	}
 
+	if caCert == "" {
+		return fmt.Errorf("no server CA certificate available to verify the instance; check memorystore.instances.getCertificateAuthority permission, or set -tls-skip-verify to connect without verification")
+	}
+
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM([]byte(caCert)) {
+		return fmt.Errorf("failed to parse CA certificate")
+	}
+
+	m.caPool = caCertPool
+	m.perInstanceCA = perInstanceCA
+	m.tlsConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    caCertPool,
+		// Go's default verification always checks the hostname (the dialed IP), which cannot express the
+		// per-instance CA chain-only check. VerifyConnection (set per endpoint in tlsConfigFor) replaces it
+		// and, unlike VerifyPeerCertificate, also runs on resumed sessions.
+		InsecureSkipVerify: true, //nolint:gosec // replaced by VerifyConnection
+		VerifyConnection:   verifyConnection(caCertPool, ""),
+	}
+
+	logger.Info(fmt.Sprintf("TLS configuration initialized with instance CA certificates (per-instance CA: %v)", perInstanceCA))
 	return nil
+}
+
+// tlsConfigFor returns the TLS configuration for connections to host, or nil when TLS is not configured
+func (m *Manager) tlsConfigFor(host string) *tls.Config {
+	if m.tlsConfig == nil || m.caPool == nil {
+		return m.tlsConfig
+	}
+	cfg := m.tlsConfig.Clone()
+	if !m.perInstanceCA {
+		cfg.VerifyConnection = verifyConnection(m.caPool, host)
+	}
+	return cfg
+}
+
+// verifyConnection verifies the server chain against roots and, when host is set, that host is in the certificate's SANs
+func verifyConnection(roots *x509.CertPool, host string) func(tls.ConnectionState) error {
+	return func(cs tls.ConnectionState) error {
+		certs := cs.PeerCertificates
+		if len(certs) == 0 {
+			return fmt.Errorf("server presented no certificate")
+		}
+
+		intermediates := x509.NewCertPool()
+		for _, cert := range certs[1:] {
+			intermediates.AddCert(cert)
+		}
+
+		if _, err := certs[0].Verify(x509.VerifyOptions{
+			Roots:         roots,
+			Intermediates: intermediates,
+			DNSName:       host,
+		}); err != nil {
+			return &tls.CertificateVerificationError{UnverifiedCertificates: certs, Err: err}
+		}
+		return nil
+	}
 }
 
 // SetAuthPassword sets the password for Redis authentication
@@ -162,7 +207,7 @@ func (m *Manager) AddProxy(ctx context.Context, endpoint discovery.Endpoint, loc
 		config:        m.config,
 		tokenSource:   m.tokenSource,
 		authPassword:  m.authPassword,
-		tlsConfig:     m.tlsConfig,
+		tlsConfig:     m.tlsConfigFor(endpoint.Host),
 		isClusterMode: m.isClusterMode,
 		nodeMap:       m.nodeMap,
 		tracing:       m.config.Tracing,
@@ -202,7 +247,7 @@ func (m *Manager) DiscoverAndAddClusterNodes(ctx context.Context, primaryEndpoin
 
 	if m.tlsConfig != nil {
 		dialer := &net.Dialer{Timeout: 5 * time.Second}
-		conn, err = tls.DialWithDialer(dialer, "tcp", remoteAddr, m.tlsConfig)
+		conn, err = tls.DialWithDialer(dialer, "tcp", remoteAddr, m.tlsConfigFor(primaryEndpoint.Host))
 	} else {
 		conn, err = net.DialTimeout("tcp", remoteAddr, 5*time.Second)
 	}

@@ -19,8 +19,11 @@ type InstanceInfo struct {
 	TransitEncryptionMode string
 	AuthorizationMode     string
 	RequiresTLS           bool
-	CACertificate         string
-	AuthPassword          string // For Redis instances with password auth
+	CACertificate         string // PEM bundle with every server CA certificate of the instance
+	// PerInstanceCA is true when the CA is unique to this instance, so a certificate chain that
+	// verifies against CACertificate identifies the instance without a hostname check.
+	PerInstanceCA bool
+	AuthPassword  string // For Redis instances with password auth
 }
 
 // Discoverer interface for discovering Memorystore endpoints

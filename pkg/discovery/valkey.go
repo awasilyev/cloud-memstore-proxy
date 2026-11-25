@@ -24,7 +24,11 @@ type ValKeyInstance struct {
 	DiscoveryEndpoints    []DiscoveryEndpoint `json:"discoveryEndpoints,omitempty"`
 	Endpoints             []InstanceEndpoint  `json:"endpoints,omitempty"`
 	ServerCaCerts         []CertInfo          `json:"serverCaCerts,omitempty"`
+	ServerCaMode          string              `json:"serverCaMode,omitempty"`
 }
+
+// perInstanceCAMode is the Memorystore server CA mode where each instance has its own CA
+const perInstanceCAMode = "GOOGLE_MANAGED_PER_INSTANCE_CA"
 
 // InstanceEndpoint represents an endpoint with connections
 type InstanceEndpoint struct {
@@ -124,20 +128,16 @@ func (d *GCPDiscoverer) DiscoverInstance(ctx context.Context, instanceName strin
 		})
 	}
 
-	// If TLS is required, get CA certificate
+	// If TLS is required, get the server CA certificates
 	if info.RequiresTLS {
+		info.PerInstanceCA = instance.ServerCaMode == perInstanceCAMode
 		if len(instance.ServerCaCerts) > 0 {
-			info.CACertificate = instance.ServerCaCerts[0].Cert
+			info.CACertificate = joinCerts(instance.ServerCaCerts)
 		} else {
-			// Try to fetch from getCertificateAuthority endpoint (may not be available for Valkey)
 			caCert, err := d.getCACertificate(ctx, instanceName)
 			if err != nil {
-				// getCertificateAuthority may not be available for Valkey instances
-				// In this case, TLS will use system CA certificates
-				if os.Getenv("DEBUG_DISCOVERY") == "true" {
-					fmt.Fprintf(os.Stderr, "Warning: Could not retrieve CA certificate: %v\n", err)
-					fmt.Fprintf(os.Stderr, "TLS will use system CA certificates\n")
-				}
+				// Not fatal here: the proxy refuses to start without a CA unless TLS verification is disabled
+				fmt.Fprintf(os.Stderr, "Warning: could not retrieve server CA certificate: %v\n", err)
 			} else {
 				info.CACertificate = caCert
 			}
@@ -200,14 +200,17 @@ func (d *GCPDiscoverer) getInstance(ctx context.Context, instanceName string) (*
 	return &instance, nil
 }
 
-// CertificateAuthority represents the response from getCertificateAuthority API
+// CertificateAuthority represents the response from the certificateAuthority API
+// https://cloud.google.com/memorystore/docs/valkey/reference/rest/v1/projects.locations.instances/getCertificateAuthority
 type CertificateAuthority struct {
 	ManagedServerCa struct {
-		CaCerts []CertInfo `json:"caCerts"`
+		CaCerts []struct {
+			Certificates []string `json:"certificates"`
+		} `json:"caCerts"`
 	} `json:"managedServerCa"`
 }
 
-// getCACertificate retrieves the CA certificate for TLS connections via REST API
+// getCACertificate retrieves every server CA certificate for TLS connections via REST API
 func (d *GCPDiscoverer) getCACertificate(ctx context.Context, instanceName string) (string, error) {
 	// Get OAuth2 token
 	creds, err := google.FindDefaultCredentials(ctx, "https://www.googleapis.com/auth/cloud-platform")
@@ -220,22 +223,19 @@ func (d *GCPDiscoverer) getCACertificate(ctx context.Context, instanceName strin
 		return "", fmt.Errorf("failed to get token: %w", err)
 	}
 
-	// Make REST API call to getCertificateAuthority
-	// According to GCP docs, this is a POST method with empty body
-	url := fmt.Sprintf("https://memorystore.googleapis.com/v1/%s:getCertificateAuthority", instanceName)
+	url := fmt.Sprintf("https://memorystore.googleapis.com/v1/%s/certificateAuthority", instanceName)
 
 	// Debug output
 	if os.Getenv("DEBUG_DISCOVERY") == "true" {
-		fmt.Fprintf(os.Stderr, "getCertificateAuthority URL: %s\n", url)
+		fmt.Fprintf(os.Stderr, "certificateAuthority URL: %s\n", url)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
-	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := d.httpClient.Do(req)
 	if err != nil {
@@ -253,9 +253,29 @@ func (d *GCPDiscoverer) getCACertificate(ctx context.Context, instanceName strin
 		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	if len(certAuth.ManagedServerCa.CaCerts) == 0 {
+	return certAuth.bundle()
+}
+
+// bundle returns every CA certificate (intermediates and roots of all chains) as one PEM bundle
+func (ca CertificateAuthority) bundle() (string, error) {
+	var certs []CertInfo
+	for _, chain := range ca.ManagedServerCa.CaCerts {
+		for _, cert := range chain.Certificates {
+			certs = append(certs, CertInfo{Cert: cert})
+		}
+	}
+	if len(certs) == 0 {
 		return "", fmt.Errorf("no CA certificates found")
 	}
+	return joinCerts(certs), nil
+}
 
-	return certAuth.ManagedServerCa.CaCerts[0].Cert, nil
+// joinCerts joins PEM certificates into one bundle
+func joinCerts(certs []CertInfo) string {
+	var b strings.Builder
+	for _, c := range certs {
+		b.WriteString(strings.TrimSpace(c.Cert))
+		b.WriteString("\n")
+	}
+	return b.String()
 }

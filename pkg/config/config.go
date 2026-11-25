@@ -30,7 +30,7 @@ func NewConfig() *Config {
 		HealthPort:    8080,
 		APITimeout:    30, // 30 seconds default for API calls
 		Verbose:       false,
-		TLSSkipVerify: true, // Default to true for GCP Memorystore self-signed certs
+		TLSSkipVerify: false, // Verify against the instance CA from the Memorystore API
 		Tracing:       false,
 	}
 }

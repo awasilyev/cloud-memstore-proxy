@@ -68,7 +68,7 @@ docker run -d -p 6379:6379 \
 | `-local-addr` | Local address to bind to | `127.0.0.1` |
 | `-start-port` | Starting port for first endpoint | `6379` |
 | `-enable-iam-auth` | Enable IAM authentication (Valkey only) | `true` |
-| `-tls-skip-verify` | Skip TLS certificate verification | `true` |
+| `-tls-skip-verify` | Skip TLS certificate verification (insecure) | `false` |
 | `-verbose` | Enable verbose logging | `false` |
 
 ### Environment Variables
@@ -129,7 +129,7 @@ This is particularly convenient when running on GKE where the proxy automaticall
    - Discovery endpoints and PSC connections
    - Transit encryption mode (`SERVER_AUTHENTICATION`, `DISABLED`)
    - Authorization mode (`IAM_AUTH`, `AUTH_DISABLED`)
-2. **TLS Setup**: If enabled, configures TLS with skip-verify for GCP self-signed certificates
+2. **TLS Setup**: If enabled, retrieves the instance server CA and verifies the server certificate against it
 3. **IAM Authentication**: For `IAM_AUTH` mode, uses GCP IAM tokens for each connection
 4. **Proxying**: Transparent TCP proxy with zero-copy I/O
 
@@ -169,12 +169,16 @@ The proxy automatically handles TLS encryption based on your instance configurat
 
 When you create a Valkey instance with transit encryption enabled, the proxy:
 1. Detects the `transitEncryptionMode` from the instance metadata
-2. Automatically retrieves the CA certificate
-3. Establishes secure TLS connections with proper certificate validation
+2. Automatically retrieves the server CA certificates (`serverCaCerts` for Redis, the [certificateAuthority](https://cloud.google.com/memorystore/docs/valkey/reference/rest/v1/projects.locations.instances/getCertificateAuthority) API for Valkey); every certificate returned is trusted, so CA rotation keeps working
+3. Establishes TLS connections that trust **only** the instance CA (never the system roots) and verify the server certificate chain against it
+4. With a per-instance CA (`GOOGLE_MANAGED_PER_INSTANCE_CA`, the default for Valkey, and always for Redis) a valid chain identifies the instance. Otherwise the endpoint IP must also be in the server certificate's SANs
+5. Refuses to start if TLS is required but no CA could be retrieved, unless `-tls-skip-verify` is set
 
 ### Manual TLS Configuration
 
 TLS is automatically configured based on the instance settings. No manual configuration is required.
+
+`-tls-skip-verify` / `TLS_SKIP_VERIFY=true` disables certificate verification. Only use it as an escape hatch: without verification, anyone able to intercept traffic can impersonate the instance and capture the IAM token or AUTH password.
 
 ### TLS Performance
 
@@ -365,7 +369,9 @@ const client = redis.createClient({
 
 ### TLS Handshake Failed
 - Ensure the instance has transit encryption properly configured
-- Verify the CA certificate was retrieved successfully (enable verbose logging)
+- Verify the CA certificate was retrieved successfully (enable verbose logging); the identity needs `memorystore.instances.getCertificateAuthority`
+- `x509: certificate signed by unknown authority`: the CA retrieved does not match the server certificate
+- `x509: cannot validate certificate for <ip>`: the instance does not use a per-instance CA and the endpoint IP is not in the server certificate
 - Check for clock skew between your system and GCP
 
 ### High Latency
