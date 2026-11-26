@@ -28,7 +28,7 @@ func main() {
 	flag.IntVar(&cfg.StartPort, "start-port", getEnvOrDefaultInt("START_PORT", 6379), "Starting port number for the first endpoint")
 	flag.IntVar(&cfg.HealthPort, "health-port", getEnvOrDefaultInt("HEALTH_PORT", 8080), "Health check HTTP server port")
 	flag.IntVar(&cfg.APITimeout, "api-timeout", getEnvOrDefaultInt("API_TIMEOUT", 30), "Timeout for GCP API calls in seconds")
-	flag.BoolVar(&cfg.TLSSkipVerify, "tls-skip-verify", getEnvOrDefaultBool("TLS_SKIP_VERIFY", true), "Skip TLS certificate verification (needed for GCP Memorystore self-signed certs)")
+	flag.BoolVar(&cfg.TLSSkipVerify, "tls-skip-verify", getEnvOrDefaultBool("TLS_SKIP_VERIFY", false), "Skip TLS certificate verification (insecure; by default the instance CA from the Memorystore API is verified)")
 	flag.BoolVar(&cfg.Verbose, "verbose", getEnvOrDefaultBool("VERBOSE", false), "Enable verbose logging")
 	flag.BoolVar(&cfg.Tracing, "tracing", getEnvOrDefaultBool("TRACING", false), "Enable tracing mode to log all Redis protocol commands")
 	flag.Parse()
@@ -114,7 +114,7 @@ func main() {
 	// Configure TLS if required
 	if instanceInfo.RequiresTLS {
 		logger.Info("Configuring TLS...")
-		if err := proxyManager.SetTLSConfig(instanceInfo.CACertificate, cfg.TLSSkipVerify); err != nil {
+		if err := proxyManager.SetTLSConfig(instanceInfo.CACertificate, instanceInfo.PerInstanceCA, cfg.TLSSkipVerify); err != nil {
 			logger.Fatal(fmt.Sprintf("Failed to configure TLS: %v", err))
 		}
 		logger.Info("TLS configuration complete")

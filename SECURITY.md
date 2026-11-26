@@ -45,8 +45,9 @@ When using Cloud Valkey Proxy:
 Minimum required permissions:
 ```
 memorystore.instances.get
-memorystore.instances.getCertificateAuthority
 ```
+
+`memorystore.instances.get` also covers retrieving the server CA via the `certificateAuthority` API.
 
 ## Security Features
 
